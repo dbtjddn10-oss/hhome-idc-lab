@@ -1,3 +1,162 @@
+## DAY 2 
+# Day 2 - Nginx 기본 웹페이지 수정
+
+## 1. 실습 목표
+
+- Nginx가 제공하는 웹페이지 파일 위치 확인
+- 원본 HTML 파일 백업
+- Nano 편집기를 이용한 웹페이지 수정
+- 브라우저에서 변경 결과 확인
+
+---
+
+## 2. Nginx 웹페이지 파일 확인
+
+Nginx의 기본 웹페이지 파일이 저장된 디렉터리를 확인했다.
+
+```bash
+ls -l /var/www/html
+```
+
+확인된 기본 웹페이지 파일:
+
+```text
+index.nginx-debian.html
+```
+
+`/var/www/html`은 Nginx가 웹페이지 파일을 불러오는 기본 디렉터리다.
+
+---
+
+## 3. 원본 HTML 파일 백업
+
+웹페이지를 수정하기 전에 문제가 발생했을 때 복구할 수 있도록 원본 파일을 백업했다.
+
+```bash
+sudo cp /var/www/html/index.nginx-debian.html /var/www/html/index.nginx-debian.html.bak
+```
+
+백업 파일이 정상적으로 생성되었는지 확인했다.
+
+```bash
+ls -l /var/www/html
+```
+
+확인된 백업 파일:
+
+```text
+index.nginx-debian.html.bak
+```
+
+### cp 명령어 의미
+
+`cp`는 파일을 복사할 때 사용하는 Linux 명령어다.
+
+```text
+원본 파일 → 백업 파일
+```
+
+---
+
+## 4. Nano 편집기로 HTML 파일 수정
+
+다음 명령어를 사용해 Nginx 기본 웹페이지를 수정했다.
+
+```bash
+sudo nano /var/www/html/index.nginx-debian.html
+```
+
+HTML 파일에서 기존 `Welcome to nginx!` 문구 아래에 다음 내용을 추가했다.
+
+```html
+<h1>Home IDC Lab Day 2</h1>
+```
+
+Nano 편집기에서 다음 키를 사용해 저장하고 종료했다.
+
+```text
+Ctrl + O : 파일 저장
+Enter    : 파일 이름 확인
+Ctrl + X : Nano 편집기 종료
+```
+
+---
+
+## 5. 브라우저에서 변경 결과 확인
+
+Windows 웹 브라우저에서 다음 주소에 접속했다.
+
+```text
+http://127.0.0.1:8080
+```
+
+페이지를 새로고침한 결과 다음 문구가 정상적으로 표시됐다.
+
+```text
+Home IDC Lab Day 2
+```
+
+이를 통해 수정한 HTML 파일을 Nginx가 정상적으로 사용자에게 제공하는 것을 확인했다.
+
+---
+
+## 6. 웹페이지 요청 흐름
+
+```text
+Windows 웹 브라우저
+        ↓
+127.0.0.1:8080
+        ↓
+VirtualBox 포트 포워딩
+        ↓
+Ubuntu Server의 80번 포트
+        ↓
+Nginx
+        ↓
+/var/www/html/index.nginx-debian.html
+```
+
+---
+
+## 7. 오늘 배운 내용
+
+- Nginx의 기본 웹페이지는 `/var/www/html` 디렉터리에 저장된다.
+- 실제 파일을 수정하기 전에 원본 파일을 백업하는 것이 중요하다.
+- `cp` 명령어로 파일을 복사하고 백업할 수 있다.
+- Nano는 Linux 터미널에서 사용하는 텍스트 편집기다.
+- HTML의 `<h1>` 태그는 큰 제목을 표시할 때 사용한다.
+- 웹페이지 파일을 수정하면 Nginx를 재설치하지 않아도 브라우저 새로고침으로 결과를 확인할 수 있다.
+- 서버 운영에서는 변경 전 백업과 변경 후 정상 동작 확인이 중요하다.
+
+---
+
+## 8. 문제 해결 및 주의 사항
+
+처음에는 기본 웹페이지 파일명을 `index.html`로 예상했지만, 실제 Ubuntu Nginx 환경에서는 다음 파일명이 사용되고 있었다.
+
+```text
+index.nginx-debian.html
+```
+
+따라서 파일을 수정하기 전에 다음 명령어로 실제 파일명을 먼저 확인하는 것이 중요하다.
+
+```bash
+ls -l /var/www/html
+```
+
+---
+
+## 9. 다음 실습 계획
+
+- Linux 파일과 디렉터리 권한 확인
+- Nginx 로그 확인
+- Windows에서 SSH로 Ubuntu 서버 접속
+- UFW 방화벽 설정
+- 간단한 서버 장애 발생 및 복구 실습
+
+---
+
+
 ## DAY 1 -Ubuntu Server and Nginx
 
 # hhome-idc-lab
