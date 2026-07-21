@@ -1,3 +1,718 @@
+# Day 8 - Docker Compose를 이용한 Nginx 서비스 관리
+
+## 1. 실습 목표
+
+- Docker Compose의 역할 이해
+- Docker Compose V2 설치
+- `compose.yaml` 작성
+- Compose 설정 문법 검사
+- 기존 `docker run` 컨테이너를 Compose 방식으로 전환
+- Compose를 이용한 서비스 시작 및 종료
+- 컨테이너 상태와 로그 확인
+- 컨테이너를 재생성해도 웹 데이터가 유지되는지 확인
+
+---
+
+## 2. Docker Compose란?
+
+Docker Compose는 Docker 컨테이너의 실행 설정을 YAML 파일로 관리하는 도구다.
+
+기존에는 Nginx 컨테이너를 실행하기 위해 다음과 같이 긴 명령어를 입력했다.
+
+```bash
+sudo docker run -d \
+  --name home-idc-nginx \
+  --restart=unless-stopped \
+  -p 8080:80 \
+  -v "$HOME/docker-nginx/html:/usr/share/nginx/html:ro" \
+  nginx
+```
+
+Docker Compose를 사용하면 이미지, 컨테이너 이름, 포트, 마운트, 재시작 정책을 `compose.yaml` 파일에 기록할 수 있다.
+
+이후에는 다음 한 줄로 서비스를 실행할 수 있다.
+
+```bash
+sudo docker compose up -d
+```
+
+### Docker Compose의 장점
+
+- 긴 실행 명령어를 파일로 관리할 수 있다.
+- 동일한 환경을 반복해서 생성할 수 있다.
+- 설정 내용을 GitHub에 저장할 수 있다.
+- 여러 컨테이너를 한 번에 관리할 수 있다.
+- 컨테이너를 삭제한 뒤에도 같은 구성으로 쉽게 복구할 수 있다.
+- 서버 환경을 다른 사람에게 전달하거나 재현하기 쉽다.
+
+---
+
+## 3. Docker Compose 설치 여부 확인
+
+다음 명령어로 Docker Compose가 설치되어 있는지 확인했다.
+
+```bash
+sudo docker compose version
+```
+
+처음에는 다음 오류가 발생했다.
+
+```text
+docker: unknown command: docker compose
+```
+
+이는 Docker는 설치되어 있지만 Docker Compose V2는 설치되어 있지 않다는 뜻이다.
+
+---
+
+## 4. Docker Compose V2 설치
+
+Ubuntu 패키지 관리 도구를 이용해 Docker Compose V2를 설치했다.
+
+```bash
+sudo apt install docker-compose-v2 -y
+```
+
+설치 후 버전을 확인했다.
+
+```bash
+sudo docker compose version
+```
+
+확인된 버전:
+
+```text
+Docker Compose version 2.40.3+ds1-0ubuntu1
+```
+
+이를 통해 Docker Compose V2가 정상적으로 설치된 것을 확인했다.
+
+---
+
+## 5. Docker Nginx 프로젝트 디렉터리로 이동
+
+Day 7에서 생성한 Docker Nginx 디렉터리로 이동했다.
+
+```bash
+cd ~/docker-nginx
+```
+
+현재 작업 경로를 확인했다.
+
+```bash
+pwd
+```
+
+출력 결과:
+
+```text
+/home/sungwoo/docker-nginx
+```
+
+현재 디렉터리 구조:
+
+```text
+docker-nginx/
+├── html/
+│   └── index.html
+└── compose.yaml
+```
+
+---
+
+## 6. Compose 설정 파일 작성
+
+Nano 편집기로 Compose 설정 파일을 생성했다.
+
+```bash
+nano compose.yaml
+```
+
+다음 내용을 작성했다.
+
+```yaml
+services:
+  nginx:
+    image: nginx:latest
+    container_name: home-idc-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./html:/usr/share/nginx/html:ro
+    restart: unless-stopped
+```
+
+Nano에서 다음 순서로 저장하고 종료했다.
+
+```text
+Ctrl + O
+Enter
+Ctrl + X
+```
+
+---
+
+## 7. compose.yaml 설정 의미
+
+### services
+
+```yaml
+services:
+```
+
+Compose에서 관리할 서비스 목록을 정의한다.
+
+---
+
+### nginx
+
+```yaml
+  nginx:
+```
+
+서비스 이름을 `nginx`로 지정했다.
+
+이 이름은 다음과 같은 Compose 명령에서 사용할 수 있다.
+
+```bash
+sudo docker compose logs -f nginx
+```
+
+---
+
+### image
+
+```yaml
+    image: nginx:latest
+```
+
+Docker Hub의 공식 Nginx 최신 이미지를 사용한다.
+
+---
+
+### container_name
+
+```yaml
+    container_name: home-idc-nginx
+```
+
+컨테이너 이름을 자동 생성하지 않고 `home-idc-nginx`로 고정한다.
+
+---
+
+### ports
+
+```yaml
+    ports:
+      - "8080:80"
+```
+
+Ubuntu 서버의 8080번 포트를 Nginx 컨테이너의 80번 포트에 연결한다.
+
+```text
+Ubuntu Server:8080
+        ↓
+Docker 포트 매핑
+        ↓
+Nginx 컨테이너:80
+```
+
+Windows 브라우저에서는 VirtualBox 포트 포워딩까지 거쳐 다음 주소로 접속한다.
+
+```text
+http://127.0.0.1:8081
+```
+
+전체 연결 구조:
+
+```text
+Windows 127.0.0.1:8081
+        ↓
+VirtualBox 포트 포워딩
+        ↓
+Ubuntu Server:8080
+        ↓
+Docker Compose 포트 매핑
+        ↓
+Nginx 컨테이너:80
+```
+
+---
+
+### volumes
+
+```yaml
+    volumes:
+      - ./html:/usr/share/nginx/html:ro
+```
+
+현재 프로젝트의 `html` 디렉터리를 컨테이너의 Nginx 웹 디렉터리에 연결한다.
+
+```text
+Ubuntu 호스트
+~/docker-nginx/html
+        ↓
+바인드 마운트
+        ↓
+컨테이너
+/usr/share/nginx/html
+```
+
+`./html`은 `compose.yaml`이 있는 위치를 기준으로 한 상대 경로다.
+
+마지막의 `:ro`는 컨테이너에서 읽기 전용으로 마운트한다는 뜻이다.
+
+---
+
+### restart
+
+```yaml
+    restart: unless-stopped
+```
+
+관리자가 직접 중지하지 않는 한, 서버 또는 Docker 서비스 재시작 후 컨테이너가 자동으로 다시 실행되도록 설정한다.
+
+---
+
+## 8. YAML 들여쓰기 규칙
+
+YAML 파일은 들여쓰기를 이용해 설정의 계층 구조를 표현한다.
+
+이번 파일에서 사용한 공백 구조:
+
+```text
+services:            앞 공백 0칸
+  nginx:             앞 공백 2칸
+    image:           앞 공백 4칸
+    ports:           앞 공백 4칸
+      - "8080:80"    앞 공백 6칸
+```
+
+주의 사항:
+
+- 탭 대신 스페이스를 사용한다.
+- 같은 계층의 항목은 같은 수의 공백을 사용한다.
+- 콜론 뒤에는 필요한 경우 한 칸을 띄운다.
+- 설정이 중복되지 않도록 확인한다.
+
+---
+
+## 9. 파일명 오류 해결
+
+처음에는 파일을 다음과 같이 잘못 저장했다.
+
+```text
+conpose.yam1
+```
+
+Docker Compose는 기본적으로 `compose.yaml` 등의 정해진 파일명을 찾기 때문에 다음 오류가 발생했다.
+
+```text
+no configuration file provided: not found
+```
+
+현재 디렉터리의 파일을 확인했다.
+
+```bash
+ls -la
+```
+
+잘못된 파일명을 다음 명령어로 수정했다.
+
+```bash
+mv conpose.yam1 compose.yaml
+```
+
+---
+
+## 10. 중복 설정 오류 해결
+
+Compose 설정 문법을 확인하는 과정에서 다음 오류가 발생했다.
+
+```text
+services must be a mapping
+```
+
+파일 내용을 확인했다.
+
+```bash
+cat -n compose.yaml
+```
+
+숨은 문자와 줄 끝을 자세히 확인하기 위해 다음 명령어도 사용했다.
+
+```bash
+sed -n 'l' compose.yaml
+```
+
+확인 결과 같은 Compose 설정이 두 번 입력되어 다음과 같이 붙어 있었다.
+
+```text
+restart: unless-stoppedservices:
+```
+
+Nano에서 파일을 다시 열었다.
+
+```bash
+nano compose.yaml
+```
+
+`Ctrl + K`를 반복해서 기존 내용을 모두 삭제한 후, 올바른 설정을 한 번만 다시 작성했다.
+
+이 과정에서 YAML 파일은 들여쓰기와 줄 구성이 매우 중요하다는 것을 확인했다.
+
+---
+
+## 11. Compose 설정 문법 검사
+
+다음 명령어로 `compose.yaml` 설정을 검사했다.
+
+```bash
+sudo docker compose config
+```
+
+오류 없이 Compose 설정이 정리되어 출력됐다.
+
+출력 내용에서 다음 항목들을 확인했다.
+
+- 서비스 이름
+- 컨테이너 이름
+- Nginx 이미지
+- 포트 매핑
+- 바인드 마운트
+- 재시작 정책
+- Compose 기본 네트워크
+
+이를 통해 Compose 파일의 문법과 설정이 정상임을 확인했다.
+
+---
+
+## 12. 기존 수동 생성 컨테이너 삭제
+
+Day 7에서 `docker run` 명령어로 직접 생성한 컨테이너가 이미 존재했다.
+
+Compose에서도 같은 컨테이너 이름과 포트를 사용하므로 충돌을 방지하기 위해 기존 컨테이너를 삭제했다.
+
+```bash
+sudo docker rm -f home-idc-nginx
+```
+
+### `-f` 옵션
+
+`-f`는 실행 중인 컨테이너를 강제로 중지한 후 삭제한다.
+
+출력 결과:
+
+```text
+home-idc-nginx
+```
+
+호스트에 바인드 마운트된 웹파일은 컨테이너 밖에 저장되어 있으므로 삭제되지 않았다.
+
+---
+
+## 13. Docker Compose로 서비스 실행
+
+Compose 파일을 이용해 Nginx 서비스를 실행했다.
+
+```bash
+sudo docker compose up -d
+```
+
+출력에서 다음 작업이 수행된 것을 확인했다.
+
+```text
+Network Created
+Container Created
+Container Started
+```
+
+### 명령어 의미
+
+- `docker compose up`: Compose 파일에 정의된 서비스 생성 및 실행
+- `-d`: 백그라운드 모드로 실행
+
+Compose는 필요한 컨테이너뿐 아니라 서비스가 사용할 기본 네트워크도 자동으로 생성했다.
+
+---
+
+## 14. 브라우저에서 웹서비스 확인
+
+Windows 브라우저에서 다음 주소에 접속했다.
+
+```text
+http://127.0.0.1:8081
+```
+
+Day 7에서 작성한 다음 웹페이지가 그대로 표시됐다.
+
+```text
+Welcome to IDC Lab Day 7
+```
+
+이를 통해 다음 항목이 모두 정상 동작함을 확인했다.
+
+- Docker Compose 실행
+- 포트 매핑
+- VirtualBox 포트 포워딩
+- Nginx 컨테이너
+- 바인드 마운트
+- 호스트의 HTML 파일
+
+---
+
+## 15. Compose 서비스 상태 확인
+
+Compose가 관리하는 컨테이너 상태를 확인했다.
+
+```bash
+sudo docker compose ps
+```
+
+출력 결과에서 다음 상태를 확인했다.
+
+```text
+Up About a minute ago
+```
+
+`Up`은 컨테이너가 현재 정상 실행 중이라는 뜻이다.
+
+`docker ps`는 전체 Docker 컨테이너를 보여주고, `docker compose ps`는 현재 Compose 프로젝트의 컨테이너를 중심으로 보여준다.
+
+---
+
+## 16. Compose 서비스 종료 및 삭제
+
+Compose가 관리하는 서비스를 종료했다.
+
+```bash
+sudo docker compose down
+```
+
+출력 결과에서 다음 작업을 확인했다.
+
+```text
+Container Removed
+Network Removed
+```
+
+`docker compose down`은 Compose가 생성한 컨테이너와 기본 네트워크를 중지하고 삭제한다.
+
+하지만 바인드 마운트로 연결한 Ubuntu 호스트의 파일은 삭제하지 않는다.
+
+```text
+삭제되는 항목
+- Compose 컨테이너
+- Compose 기본 네트워크
+
+유지되는 항목
+- compose.yaml
+- html/index.html
+- Docker 이미지
+- 호스트의 웹 데이터
+```
+
+---
+
+## 17. Compose 서비스 재생성
+
+같은 Compose 파일로 서비스를 다시 실행했다.
+
+```bash
+sudo docker compose up -d
+```
+
+새로운 컨테이너와 네트워크가 생성되고 Nginx 서비스가 다시 시작됐다.
+
+브라우저에서 다음 주소를 새로고침했다.
+
+```text
+http://127.0.0.1:8081
+```
+
+컨테이너가 삭제된 후 다시 생성됐지만 다음 문구가 그대로 나타났다.
+
+```text
+Welcome to IDC Lab Day 7
+```
+
+이를 통해 Compose 설정 재현성과 바인드 마운트 데이터 영속성이 함께 정상 동작함을 확인했다.
+
+---
+
+## 18. Compose 로그 실시간 확인
+
+Compose 명령어를 이용해 Nginx 서비스의 로그를 실시간으로 확인했다.
+
+```bash
+sudo docker compose logs -f nginx
+```
+
+### 명령어 의미
+
+- `docker compose logs`: Compose 서비스 로그 확인
+- `-f`: 새로운 로그를 실시간으로 계속 표시
+- `nginx`: 로그를 확인할 Compose 서비스 이름
+
+명령어를 실행한 상태에서 브라우저를 새로고침했다.
+
+```text
+http://127.0.0.1:8081
+```
+
+새로고침할 때마다 Nginx 접속 로그가 터미널에 출력됐다.
+
+로그 확인을 종료할 때는 다음 키를 사용했다.
+
+```text
+Ctrl + C
+```
+
+---
+
+## 19. docker run과 Docker Compose 비교
+
+| 구분 | docker run | Docker Compose |
+|---|---|---|
+| 설정 위치 | 긴 명령어 | `compose.yaml` |
+| 반복 실행 | 명령어를 다시 입력 | `compose up -d` |
+| 설정 공유 | 명령어를 별도 기록 | YAML 파일 공유 |
+| 여러 서비스 관리 | 각각 실행 | 하나의 파일로 관리 |
+| 네트워크 생성 | 직접 구성 가능 | 기본 네트워크 자동 생성 |
+| 종료 및 정리 | 개별 명령어 필요 | `compose down` |
+| GitHub 관리 | README에 명령 기록 | 실제 설정 파일 업로드 가능 |
+| 환경 재현 | 실수 가능성이 큼 | 같은 구성으로 재현 가능 |
+
+---
+
+## 20. 오늘 배운 내용
+
+- Docker Compose는 컨테이너 실행 설정을 YAML 파일로 관리한다.
+- `docker-compose-v2` 패키지로 Compose V2를 설치할 수 있다.
+- `compose.yaml`은 Compose의 기본 설정 파일명이다.
+- YAML에서는 탭이 아니라 스페이스 들여쓰기를 사용해야 한다.
+- `docker compose config`로 실행 전에 설정 문법을 검사할 수 있다.
+- 같은 컨테이너 이름이나 포트를 사용하면 기존 컨테이너와 충돌할 수 있다.
+- `docker compose up -d`로 서비스를 백그라운드 실행할 수 있다.
+- `docker compose ps`로 Compose 서비스 상태를 확인할 수 있다.
+- `docker compose down`으로 컨테이너와 네트워크를 정리할 수 있다.
+- 바인드 마운트된 호스트 데이터는 `compose down` 후에도 유지된다.
+- 같은 Compose 파일을 사용하면 동일한 환경을 빠르게 재생성할 수 있다.
+- `docker compose logs -f`로 서비스 로그를 실시간 확인할 수 있다.
+
+---
+
+## 21. 장애 및 문제 해결 기록
+
+### 문제 1: Docker Compose 명령어 없음
+
+오류:
+
+```text
+docker: unknown command: docker compose
+```
+
+해결:
+
+```bash
+sudo apt install docker-compose-v2 -y
+```
+
+---
+
+### 문제 2: Compose 설정 파일을 찾지 못함
+
+오류:
+
+```text
+no configuration file provided: not found
+```
+
+원인:
+
+```text
+conpose.yam1
+```
+
+이라는 잘못된 파일명으로 저장했다.
+
+해결:
+
+```bash
+mv conpose.yam1 compose.yaml
+```
+
+---
+
+### 문제 3: services must be a mapping
+
+오류:
+
+```text
+services must be a mapping
+```
+
+원인:
+
+- 같은 설정이 두 번 입력됨
+- 두 설정 사이에 줄바꿈이 없었음
+- YAML 구조가 깨짐
+
+문제가 된 부분:
+
+```text
+restart: unless-stoppedservices:
+```
+
+해결:
+
+- 기존 내용을 모두 삭제
+- 설정을 한 번만 다시 작성
+- 탭 대신 스페이스로 들여쓰기
+- `docker compose config`로 문법 재검사
+
+---
+
+## 22. 실제 프로젝트 파일
+
+이번 Day 8 실습에서 생성한 실제 설정 파일:
+
+```text
+~/docker-nginx/compose.yaml
+```
+
+파일 내용:
+
+```yaml
+services:
+  nginx:
+    image: nginx:latest
+    container_name: home-idc-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./html:/usr/share/nginx/html:ro
+    restart: unless-stopped
+```
+
+최종 포트폴리오에서는 README 기록뿐 아니라 이 `compose.yaml` 파일도 GitHub 저장소에 추가할 예정이다.
+
+---
+
+## 23. 다음 실습 계획
+
+- Bash 서버 상태 점검 스크립트 작성
+- CPU, 메모리, 디스크 사용량 확인
+- Nginx와 Docker 컨테이너 상태 자동 확인
+- 점검 결과를 로그 파일에 저장
+- 종료 코드와 조건문 사용
+- Cron을 이용한 정기 실행
+- 웹 콘텐츠 자동 백업
+- AWS S3 백업 연동
+
+---
+
+
 # Day 7 - Docker 바인드 마운트와 데이터 영속성
 
 ## 1. 실습 목표
