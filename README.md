@@ -1,3 +1,823 @@
+# Day 11 - Nginx 웹 콘텐츠 백업 및 복원 자동화
+
+## 1. 실습 목표
+
+- Nginx 웹 콘텐츠를 `tar.gz` 파일로 압축 백업
+- 백업 파일에 날짜와 시간 추가
+- 압축 파일 내부 내용 확인
+- SHA-256 체크섬 생성 및 무결성 검증
+- 웹 콘텐츠 유실 상황 재현
+- 백업 파일을 이용한 복원
+- 복원된 파일과 원본 파일 비교
+- Bash 백업 스크립트 작성
+- 오래된 백업 파일 자동 삭제
+- Cron을 이용한 매일 자동 백업
+- 백업 스크립트와 Cron 설정을 GitHub에 업로드
+
+---
+
+## 2. 백업 대상 확인
+
+Docker Nginx에서 사용하는 웹 콘텐츠 디렉터리를 확인했다.
+
+```bash
+ls -l /home/sungwoo/docker-nginx/html
+```
+
+출력:
+
+```text
+total 4
+-rw-rw-r-- 1 sungwoo sungwoo 35 Jul 20 03:46 index.html
+```
+
+백업 대상 파일:
+
+```text
+/home/sungwoo/docker-nginx/html/index.html
+```
+
+이 디렉터리는 Docker 컨테이너에 다음 위치로 바인드 마운트되어 있다.
+
+```text
+Ubuntu 호스트
+/home/sungwoo/docker-nginx/html
+        ↓
+Docker bind mount
+        ↓
+Nginx 컨테이너
+/usr/share/nginx/html
+```
+
+---
+
+## 3. 백업 디렉터리 생성
+
+백업 파일을 저장할 디렉터리를 생성했다.
+
+```bash
+mkdir -p /home/sungwoo/home-idc-lab/backups
+```
+
+백업 저장 경로:
+
+```text
+/home/sungwoo/home-idc-lab/backups
+```
+
+---
+
+## 4. 웹 콘텐츠 수동 백업
+
+`tar` 명령을 사용해 Nginx 웹 콘텐츠를 `tar.gz` 형식으로 압축했다.
+
+```bash
+tar -czf /home/sungwoo/home-idc-lab/backups/nginx-html-$(date +%Y%m%d-%H%M%S).tar.gz \
+  -C /home/sungwoo/docker-nginx html
+```
+
+생성된 백업 파일:
+
+```text
+nginx-html-20260720-154312.tar.gz
+```
+
+파일명에 날짜와 시간이 포함되어 여러 백업을 구분할 수 있다.
+
+```text
+nginx-html-YYYYMMDD-HHMMSS.tar.gz
+```
+
+---
+
+## 5. tar 명령어 옵션
+
+사용한 명령:
+
+```bash
+tar -czf 백업파일.tar.gz -C 상위경로 html
+```
+
+옵션 의미:
+
+| 옵션 | 의미 |
+|---|---|
+| `-c` | 새로운 압축 파일 생성 |
+| `-z` | gzip 방식으로 압축 |
+| `-f` | 생성할 파일 이름 지정 |
+| `-C` | 지정한 디렉터리로 이동한 후 작업 |
+
+절대경로 전체를 저장하지 않고 다음과 같은 구조로 압축했다.
+
+```text
+html/
+└── index.html
+```
+
+---
+
+## 6. 백업 파일 생성 확인
+
+```bash
+ls -lh /home/sungwoo/home-idc-lab/backups
+```
+
+출력:
+
+```text
+-rw-rw-r-- 1 sungwoo sungwoo 191 Jul 20 15:43 nginx-html-20260720-154312.tar.gz
+```
+
+백업 파일이 정상적으로 생성된 것을 확인했다.
+
+---
+
+## 7. 압축 파일 내부 확인
+
+압축을 해제하지 않고 백업 파일의 내부 목록을 확인했다.
+
+```bash
+tar -tzf /home/sungwoo/home-idc-lab/backups/nginx-html-20260720-154312.tar.gz
+```
+
+출력:
+
+```text
+html/
+html/index.html
+```
+
+백업 파일 내부에 웹 콘텐츠가 정상적으로 포함된 것을 확인했다.
+
+---
+
+## 8. SHA-256 체크섬 생성
+
+백업 파일의 손상 여부를 확인하기 위해 SHA-256 체크섬 파일을 생성했다.
+
+```bash
+cd /home/sungwoo/home-idc-lab/backups
+```
+
+```bash
+sha256sum nginx-html-20260720-154312.tar.gz \
+  > nginx-html-20260720-154312.tar.gz.sha256
+```
+
+생성된 파일:
+
+```text
+nginx-html-20260720-154312.tar.gz
+nginx-html-20260720-154312.tar.gz.sha256
+```
+
+체크섬은 파일 내용으로 계산한 고유한 해시값이다.
+
+파일 내용이 조금이라도 변경되거나 손상되면 체크섬 검증에 실패한다.
+
+---
+
+## 9. 백업 파일 무결성 검증
+
+다음 명령으로 백업 파일과 체크섬을 비교했다.
+
+```bash
+sha256sum -c nginx-html-20260720-154312.tar.gz.sha256
+```
+
+출력:
+
+```text
+nginx-html-20260720-154312.tar.gz: OK
+```
+
+`OK`가 출력되어 백업 파일이 손상되지 않았음을 확인했다.
+
+---
+
+## 10. 웹 콘텐츠 유실 상황 재현
+
+복원 테스트를 위해 `index.html` 파일을 삭제하지 않고 이름을 변경했다.
+
+```bash
+mv /home/sungwoo/docker-nginx/html/index.html \
+   /home/sungwoo/docker-nginx/html/index.html.lost
+```
+
+원본 파일을 완전히 삭제하지 않고 이름만 변경해 안전하게 장애 상황을 만들었다.
+
+---
+
+## 11. 웹서비스 장애 확인
+
+HTTP 응답 상태를 확인했다.
+
+```bash
+curl -I http://127.0.0.1:8080
+```
+
+출력:
+
+```text
+HTTP/1.1 403 Forbidden
+Server: nginx/1.31.3
+```
+
+Nginx 컨테이너는 실행 중이지만 기본 웹파일인 `index.html`을 찾을 수 없어 `403 Forbidden`이 발생했다.
+
+이를 통해 다음 두 상태가 다를 수 있음을 확인했다.
+
+```text
+Nginx 프로세스 실행 상태: 정상
+웹 콘텐츠 제공 상태: 장애
+```
+
+---
+
+## 12. 백업 파일을 이용한 복원
+
+생성해 둔 `tar.gz` 백업을 원래 웹 콘텐츠 경로에 복원했다.
+
+```bash
+tar -xzf /home/sungwoo/home-idc-lab/backups/nginx-html-20260720-154312.tar.gz \
+  -C /home/sungwoo/docker-nginx
+```
+
+압축 파일 내부의 `html/index.html`이 다음 위치로 복원됐다.
+
+```text
+/home/sungwoo/docker-nginx/html/index.html
+```
+
+---
+
+## 13. 복원 후 HTTP 확인
+
+복원 후 웹서비스 상태를 다시 확인했다.
+
+```bash
+curl -I http://127.0.0.1:8080
+```
+
+출력:
+
+```text
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Length: 35
+```
+
+`403 Forbidden`에서 `200 OK`로 변경되어 웹서비스가 정상 복구된 것을 확인했다.
+
+---
+
+## 14. 복원 파일과 원본 비교
+
+복원된 `index.html`과 이름을 변경해 보관한 원본 파일을 비교했다.
+
+```bash
+cmp -s \
+  /home/sungwoo/docker-nginx/html/index.html \
+  /home/sungwoo/docker-nginx/html/index.html.lost \
+  && echo MATCH || echo DIFFERENT
+```
+
+출력:
+
+```text
+MATCH
+```
+
+복원된 파일이 유실 전 원본과 완전히 동일함을 확인했다.
+
+---
+
+## 15. 테스트 파일 정리
+
+복원이 정상적으로 완료됐으므로 테스트용 원본 파일을 삭제했다.
+
+```bash
+rm /home/sungwoo/docker-nginx/html/index.html.lost
+```
+
+최종 웹 콘텐츠:
+
+```text
+/home/sungwoo/docker-nginx/html/index.html
+```
+
+---
+
+## 16. 자동 백업 스크립트 작성
+
+수동으로 수행한 백업 과정을 자동화하기 위해 다음 스크립트를 작성했다.
+
+파일 위치:
+
+```text
+/home/sungwoo/home-idc-lab/scripts/backup-nginx.sh
+```
+
+스크립트 내용:
+
+```bash
+#!/bin/bash
+
+set -euo pipefail
+
+SOURCE_DIR="/home/sungwoo/docker-nginx/html"
+BACKUP_DIR="/home/sungwoo/home-idc-lab/backups"
+TIMESTAMP="$(date '+%Y%m%d-%H%M%S')"
+BACKUP_FILE="$BACKUP_DIR/nginx-html-$TIMESTAMP.tar.gz"
+
+if [ ! -d "$SOURCE_DIR" ]; then
+  echo "FAIL: Source directory not found: $SOURCE_DIR" >&2
+  exit 1
+fi
+
+mkdir -p "$BACKUP_DIR"
+
+tar -czf "$BACKUP_FILE" \
+  -C "$(dirname "$SOURCE_DIR")" \
+  "$(basename "$SOURCE_DIR")"
+
+cd "$BACKUP_DIR"
+
+sha256sum "$(basename "$BACKUP_FILE")" \
+  > "$(basename "$BACKUP_FILE").sha256"
+
+find "$BACKUP_DIR" -maxdepth 1 -type f \
+  \( -name 'nginx-html-*.tar.gz' -o -name 'nginx-html-*.tar.gz.sha256' \) \
+  -mtime +7 -delete
+
+echo "Backup completed: $BACKUP_FILE"
+```
+
+---
+
+## 17. 안전한 Bash 실행 옵션
+
+스크립트에 다음 설정을 추가했다.
+
+```bash
+set -euo pipefail
+```
+
+각 옵션의 의미:
+
+| 옵션 | 의미 |
+|---|---|
+| `-e` | 명령어가 실패하면 스크립트 종료 |
+| `-u` | 정의되지 않은 변수를 사용하면 오류 |
+| `pipefail` | 파이프라인 중 하나라도 실패하면 전체 실패 |
+
+오류가 발생한 상태에서 백업 작업이 계속 진행되는 것을 방지한다.
+
+---
+
+## 18. 백업 대상 디렉터리 검사
+
+백업 전에 원본 디렉터리가 존재하는지 확인한다.
+
+```bash
+if [ ! -d "$SOURCE_DIR" ]; then
+  echo "FAIL: Source directory not found: $SOURCE_DIR" >&2
+  exit 1
+fi
+```
+
+디렉터리가 존재하지 않으면 오류 메시지를 출력하고 종료 코드 `1`로 중단한다.
+
+---
+
+## 19. 날짜 기반 백업 파일명
+
+현재 날짜와 시간을 변수에 저장했다.
+
+```bash
+TIMESTAMP="$(date '+%Y%m%d-%H%M%S')"
+```
+
+백업 파일 경로:
+
+```bash
+BACKUP_FILE="$BACKUP_DIR/nginx-html-$TIMESTAMP.tar.gz"
+```
+
+실행할 때마다 서로 다른 이름의 백업 파일이 생성된다.
+
+예시:
+
+```text
+nginx-html-20260720-155137.tar.gz
+nginx-html-20260720-155424.tar.gz
+nginx-html-20260720-155519.tar.gz
+```
+
+---
+
+## 20. 자동 체크섬 생성
+
+압축 백업 후 동일한 이름의 SHA-256 파일을 자동 생성한다.
+
+```bash
+sha256sum "$(basename "$BACKUP_FILE")" \
+  > "$(basename "$BACKUP_FILE").sha256"
+```
+
+생성 예시:
+
+```text
+nginx-html-20260720-155137.tar.gz
+nginx-html-20260720-155137.tar.gz.sha256
+```
+
+백업 데이터와 검증 정보를 한 쌍으로 관리할 수 있다.
+
+---
+
+## 21. 오래된 백업 자동 삭제
+
+백업 파일이 계속 누적되어 디스크를 가득 채우지 않도록 오래된 파일을 자동 삭제한다.
+
+```bash
+find "$BACKUP_DIR" -maxdepth 1 -type f \
+  \( -name 'nginx-html-*.tar.gz' -o -name 'nginx-html-*.tar.gz.sha256' \) \
+  -mtime +7 -delete
+```
+
+삭제 대상:
+
+```text
+nginx-html-*.tar.gz
+nginx-html-*.tar.gz.sha256
+```
+
+설정된 보관 기간보다 오래된 압축 파일과 체크섬 파일을 함께 삭제한다.
+
+---
+
+## 22. 실행 권한 부여
+
+Windows PowerShell을 통해 스크립트를 작성했기 때문에 Linux 줄바꿈 형식으로 정리했다.
+
+```bash
+sed -i 's/\r$//' /home/sungwoo/home-idc-lab/scripts/backup-nginx.sh
+```
+
+실행 권한을 부여했다.
+
+```bash
+chmod +x /home/sungwoo/home-idc-lab/scripts/backup-nginx.sh
+```
+
+---
+
+## 23. 자동 백업 스크립트 실행
+
+작성한 스크립트를 직접 실행했다.
+
+```bash
+/home/sungwoo/home-idc-lab/scripts/backup-nginx.sh
+```
+
+출력:
+
+```text
+Backup completed: /home/sungwoo/home-idc-lab/backups/nginx-html-20260720-155137.tar.gz
+```
+
+새 압축 백업과 체크섬 파일이 자동 생성됐다.
+
+---
+
+## 24. 자동 생성 결과 확인
+
+```bash
+ls -lh /home/sungwoo/home-idc-lab/backups
+```
+
+출력 예시:
+
+```text
+nginx-html-20260720-154312.tar.gz
+nginx-html-20260720-154312.tar.gz.sha256
+nginx-html-20260720-155137.tar.gz
+nginx-html-20260720-155137.tar.gz.sha256
+```
+
+백업 파일과 체크섬 파일이 각각 생성된 것을 확인했다.
+
+---
+
+## 25. 자동 생성 백업 무결성 검증
+
+```bash
+cd /home/sungwoo/home-idc-lab/backups
+```
+
+```bash
+sha256sum -c nginx-html-20260720-155137.tar.gz.sha256
+```
+
+출력:
+
+```text
+nginx-html-20260720-155137.tar.gz: OK
+```
+
+자동 백업 스크립트가 생성한 파일도 정상임을 확인했다.
+
+---
+
+## 26. 오래된 백업 삭제 테스트
+
+실제 파일을 기다리지 않고 8일 전 파일처럼 보이는 테스트 파일을 생성했다.
+
+```bash
+touch \
+  /home/sungwoo/home-idc-lab/backups/nginx-html-old-test.tar.gz \
+  /home/sungwoo/home-idc-lab/backups/nginx-html-old-test.tar.gz.sha256
+```
+
+수정 시각을 8일 전으로 변경했다.
+
+```bash
+touch -d '8 days ago' \
+  /home/sungwoo/home-idc-lab/backups/nginx-html-old-test.tar.gz \
+  /home/sungwoo/home-idc-lab/backups/nginx-html-old-test.tar.gz.sha256
+```
+
+백업 스크립트를 다시 실행했다.
+
+```bash
+/home/sungwoo/home-idc-lab/scripts/backup-nginx.sh
+```
+
+삭제 여부를 확인했다.
+
+```bash
+ls -l /home/sungwoo/home-idc-lab/backups/nginx-html-old-test* \
+  2>/dev/null || echo OLD_BACKUP_REMOVED
+```
+
+출력:
+
+```text
+OLD_BACKUP_REMOVED
+```
+
+오래된 압축 파일과 체크섬 파일이 자동 삭제되는 것을 확인했다.
+
+---
+
+## 27. 매일 자동 백업 Cron 등록
+
+백업 스크립트를 매일 새벽 2시에 실행하도록 Crontab에 등록했다.
+
+```cron
+0 2 * * * /home/sungwoo/home-idc-lab/scripts/backup-nginx.sh >> /home/sungwoo/home-idc-lab/logs/backup.log 2>&1
+```
+
+시간 설정 의미:
+
+```text
+0 2 * * *
+│ │ │ │ │
+│ │ │ │ └─ 모든 요일
+│ │ │ └─── 모든 월
+│ │ └───── 매일
+│ └─────── 오전 2시
+└───────── 0분
+```
+
+즉, 매일 오전 2시 정각에 백업을 실행한다.
+
+---
+
+## 28. 최종 Crontab 확인
+
+```bash
+crontab -l
+```
+
+출력:
+
+```cron
+*/5 * * * * /home/sungwoo/home-idc-lab/scripts/health-check.sh >> /home/sungwoo/home-idc-lab/logs/cron-health-check.log 2>&1
+0 2 * * * /home/sungwoo/home-idc-lab/scripts/backup-nginx.sh >> /home/sungwoo/home-idc-lab/logs/backup.log 2>&1
+```
+
+최종 자동화 구성:
+
+```text
+5분마다
+└── 서버 상태 점검
+
+매일 오전 2시
+└── Nginx 웹 콘텐츠 백업
+```
+
+---
+
+## 29. Cron 설정 파일 저장
+
+현재 Crontab 전체를 프로젝트 파일로 저장했다.
+
+```bash
+crontab -l > /home/sungwoo/home-idc-lab/cron/home-idc.cron
+```
+
+저장 경로:
+
+```text
+/home/sungwoo/home-idc-lab/cron/home-idc.cron
+```
+
+파일 내용:
+
+```cron
+*/5 * * * * /home/sungwoo/home-idc-lab/scripts/health-check.sh >> /home/sungwoo/home-idc-lab/logs/cron-health-check.log 2>&1
+0 2 * * * /home/sungwoo/home-idc-lab/scripts/backup-nginx.sh >> /home/sungwoo/home-idc-lab/logs/backup.log 2>&1
+```
+
+---
+
+## 30. Windows로 프로젝트 파일 복사
+
+백업 스크립트를 Windows로 복사했다.
+
+```powershell
+scp -P 2222 sungwoo@127.0.0.1:/home/sungwoo/home-idc-lab/scripts/backup-nginx.sh .\scripts\backup-nginx.sh
+```
+
+Cron 설정 파일도 복사했다.
+
+```powershell
+scp -P 2222 sungwoo@127.0.0.1:/home/sungwoo/home-idc-lab/cron/home-idc.cron .\cron\home-idc.cron
+```
+
+---
+
+## 31. GitHub 업로드
+
+GitHub 저장소에 다음 파일을 추가했다.
+
+```text
+scripts/backup-nginx.sh
+cron/home-idc.cron
+```
+
+최종 저장소 구조:
+
+```text
+hhome-idc-lab/
+├── README.md
+├── compose.yaml
+├── scripts/
+│   ├── health-check.sh
+│   └── backup-nginx.sh
+└── cron/
+    ├── health-check.cron
+    └── home-idc.cron
+```
+
+파일 업로드 커밋 메시지:
+
+```text
+feat: add automated Nginx backup and cron schedule
+```
+
+> 실제 `backups` 디렉터리의 `tar.gz` 파일과 운영 로그는 GitHub에 업로드하지 않는다. 저장소에는 백업을 재현할 수 있는 스크립트와 설정 파일만 관리한다.
+
+---
+
+## 32. 장애 및 문제 해결 기록
+
+### 문제 1: 웹 콘텐츠 유실 시 컨테이너는 실행 중
+
+`index.html`을 이동한 후에도 Nginx 컨테이너 자체는 실행 중이었다.
+
+하지만 HTTP 요청 결과는 다음과 같았다.
+
+```text
+HTTP/1.1 403 Forbidden
+```
+
+따라서 프로세스 상태뿐 아니라 실제 HTTP 응답도 함께 확인해야 한다.
+
+---
+
+### 문제 2: 백업 파일 존재만으로는 정상 여부를 알 수 없음
+
+압축 파일이 생성되었더라도 파일이 손상됐을 가능성이 있다.
+
+해결:
+
+```bash
+sha256sum
+sha256sum -c
+```
+
+를 이용해 백업 파일의 무결성을 검증했다.
+
+---
+
+### 문제 3: 복원 성공 여부 검증 필요
+
+파일이 다시 생성된 것만으로는 원본과 동일하다고 판단할 수 없다.
+
+해결:
+
+```bash
+cmp -s 복원파일 원본파일
+```
+
+을 사용해 파일 내용을 비교했고 `MATCH` 결과를 확인했다.
+
+---
+
+### 문제 4: 백업 파일 무한 누적
+
+정기 백업을 수행하면 디스크 공간이 계속 감소할 수 있다.
+
+해결:
+
+```bash
+find ... -mtime +7 -delete
+```
+
+를 사용해 보관 기간을 초과한 백업과 체크섬 파일을 자동 정리했다.
+
+---
+
+### 문제 5: 수동 백업은 실행을 잊을 수 있음
+
+운영자가 매일 직접 실행하면 누락될 가능성이 있다.
+
+해결:
+
+```cron
+0 2 * * *
+```
+
+Cron 설정을 사용해 매일 새벽 2시에 자동 실행되도록 구성했다.
+
+---
+
+## 33. 오늘 배운 내용
+
+- `tar -czf`로 디렉터리를 gzip 압축 백업할 수 있다.
+- `tar -tzf`로 압축 파일의 내부 목록을 확인할 수 있다.
+- `tar -xzf`로 압축 파일을 복원할 수 있다.
+- 날짜와 시간을 파일명에 포함하면 백업 이력을 구분할 수 있다.
+- SHA-256 체크섬으로 파일의 손상 여부를 검증할 수 있다.
+- 서비스 프로세스가 실행 중이어도 콘텐츠 문제로 장애가 발생할 수 있다.
+- HTTP 상태 코드로 실제 서비스 상태를 확인해야 한다.
+- `cmp` 명령으로 복원된 파일과 원본을 비교할 수 있다.
+- Bash 스크립트로 백업, 검증 파일 생성, 정리 작업을 자동화할 수 있다.
+- `set -euo pipefail`로 스크립트 실행 안정성을 높일 수 있다.
+- `find -mtime`을 이용해 오래된 백업을 자동 삭제할 수 있다.
+- Cron을 이용해 매일 정해진 시간에 자동 백업할 수 있다.
+- 실제 백업 데이터보다 재현 가능한 스크립트와 설정을 GitHub에 저장하는 것이 좋다.
+
+---
+
+## 34. Day 11 결과
+
+- Nginx 웹 콘텐츠 압축 백업 완료
+- 날짜 기반 백업 파일 생성 완료
+- 압축 내부 파일 확인 완료
+- SHA-256 체크섬 생성 및 검증 완료
+- `index.html` 유실 장애 재현 완료
+- HTTP `403 Forbidden` 확인
+- 백업 파일을 이용한 복원 완료
+- HTTP `200 OK` 복구 확인
+- 복원 파일과 원본 파일 비교 완료
+- Bash 자동 백업 스크립트 작성 완료
+- 오래된 백업 자동 삭제 기능 구현
+- 8일 전 테스트 파일 자동 삭제 확인
+- 매일 오전 2시 백업 Cron 등록
+- `scripts/backup-nginx.sh` GitHub 업로드
+- `cron/home-idc.cron` GitHub 업로드
+
+---
+
+## 35. 다음 실습 계획
+
+- AWS 계정 보안 설정
+- IAM 사용자 및 최소 권한 구성
+- AWS CLI 설치 및 인증
+- S3 백업 버킷 생성
+- 로컬 백업 파일을 S3에 업로드
+- S3 버전 관리 설정
+- 백업 파일 다운로드 및 복구
+- AWS 비용 알림과 예산 설정
+
+---
+
+
+
 # Day 10 - Cron을 이용한 서버 상태 점검 자동화
 
 ## 1. 실습 목표
