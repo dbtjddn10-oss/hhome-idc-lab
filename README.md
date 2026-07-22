@@ -1,3 +1,765 @@
+# Day 9 - Bash 서버 상태 점검 스크립트
+
+## 1. 실습 목표
+
+- Bash 스크립트 작성
+- CPU 및 서버 가동 시간 확인
+- 메모리와 디스크 사용량 확인
+- Docker 서비스 상태 확인
+- Nginx 컨테이너 상태 확인
+- HTTP 웹서비스 응답 확인
+- 정상과 장애 상태를 종료 코드로 구분
+- 장애 발생 및 복구 테스트
+- 점검 결과를 로그 파일로 저장
+- 작성한 스크립트를 GitHub에 업로드
+
+---
+
+## 2. 프로젝트 디렉터리 생성
+
+상태 점검 스크립트를 저장하기 위해 다음 디렉터리를 생성했다.
+
+```bash
+mkdir -p ~/home-idc-lab/scripts
+```
+
+생성된 경로:
+
+```text
+/home/sungwoo/home-idc-lab/scripts
+```
+
+최종 파일 위치:
+
+```text
+/home/sungwoo/home-idc-lab/scripts/health-check.sh
+```
+
+---
+
+## 3. 상태 점검 스크립트 작성
+
+다음 내용으로 `health-check.sh` 파일을 작성했다.
+
+```bash
+#!/bin/bash
+
+CONTAINER_NAME="home-idc-nginx"
+URL="http://127.0.0.1:8080"
+STATUS=0
+
+echo "===== Home IDC Health Check ====="
+echo "Time: $(date '+%Y-%m-%d %H:%M:%S')"
+echo
+
+echo "[CPU / UPTIME]"
+uptime
+echo
+
+echo "[MEMORY]"
+free -h
+echo
+
+echo "[DISK]"
+df -h /
+echo
+
+echo "[DOCKER]"
+if systemctl is-active --quiet docker; then
+  echo "OK: Docker service is running"
+else
+  echo "FAIL: Docker service is not running"
+  STATUS=1
+fi
+
+if docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null | grep -q true; then
+  echo "OK: $CONTAINER_NAME is running"
+else
+  echo "FAIL: $CONTAINER_NAME is not running"
+  STATUS=1
+fi
+
+echo
+echo "[HTTP]"
+if curl -fsS "$URL" >/dev/null; then
+  echo "OK: $URL responded"
+else
+  echo "FAIL: $URL did not respond"
+  STATUS=1
+fi
+
+echo
+echo "Exit code: $STATUS"
+exit "$STATUS"
+```
+
+---
+
+## 4. PowerShell과 SSH를 이용한 파일 작성
+
+VirtualBox 콘솔에서는 긴 내용을 복사하여 붙여넣기 어려웠다.
+
+따라서 Windows PowerShell에서 SSH를 이용해 Ubuntu 서버에 스크립트 내용을 전송했다.
+
+PowerShell은 Windows에서 사용하는 명령어 터미널이며, `ssh` 명령어를 사용하면 Windows에서 Ubuntu 서버의 명령어를 원격으로 실행할 수 있다.
+
+```text
+Windows PowerShell
+        ↓ SSH
+Ubuntu Server
+        ↓
+health-check.sh 생성
+```
+
+Windows와 Ubuntu 사이의 파일 복사에는 `scp`를 사용했다.
+
+---
+
+## 5. Windows 줄바꿈 문자 제거 및 실행 권한 부여
+
+Windows와 Linux는 텍스트 파일의 줄바꿈 방식이 다를 수 있다.
+
+Windows에서 전송된 파일에 포함될 수 있는 `CR` 문자를 다음 명령어로 제거했다.
+
+```bash
+sed -i 's/\r$//' /home/sungwoo/home-idc-lab/scripts/health-check.sh
+```
+
+스크립트를 직접 실행할 수 있도록 실행 권한을 부여했다.
+
+```bash
+chmod +x /home/sungwoo/home-idc-lab/scripts/health-check.sh
+```
+
+### 실행 권한
+
+Linux 파일은 내용이 존재하더라도 실행 권한이 없으면 프로그램처럼 실행할 수 없다.
+
+`chmod +x`는 파일에 실행 권한을 추가한다.
+
+---
+
+## 6. 스크립트 구성
+
+### 점검 대상 변수
+
+```bash
+CONTAINER_NAME="home-idc-nginx"
+URL="http://127.0.0.1:8080"
+STATUS=0
+```
+
+- `CONTAINER_NAME`: 확인할 Docker 컨테이너 이름
+- `URL`: 확인할 Nginx 웹서비스 주소
+- `STATUS`: 전체 점검 결과를 저장하는 변수
+
+처음에는 정상 상태를 의미하는 `0`으로 시작한다.
+
+점검 중 하나라도 문제가 발견되면 다음과 같이 값을 변경한다.
+
+```bash
+STATUS=1
+```
+
+---
+
+## 7. CPU 및 서버 가동 시간 확인
+
+```bash
+uptime
+```
+
+`uptime` 명령으로 다음 정보를 확인한다.
+
+- 현재 시각
+- 서버가 켜진 후 경과 시간
+- 현재 로그인 사용자 수
+- 1분, 5분, 15분 평균 부하
+
+예시:
+
+```text
+12:03:53 up 11:39, 2 users, load average: 0.00, 0.00, 0.00
+```
+
+---
+
+## 8. 메모리 상태 확인
+
+```bash
+free -h
+```
+
+`free -h` 명령으로 다음 정보를 확인한다.
+
+- 전체 메모리
+- 사용 중인 메모리
+- 여유 메모리
+- 버퍼 및 캐시
+- 실제 사용 가능한 메모리
+- Swap 사용량
+
+`-h` 옵션은 용량을 사람이 읽기 쉬운 단위로 표시한다.
+
+예시:
+
+```text
+Mem:  3.3Gi  592Mi  978Mi  2.0Gi  2.7Gi
+Swap: 2.0Gi     0B  2.0Gi
+```
+
+---
+
+## 9. 디스크 사용량 확인
+
+```bash
+df -h /
+```
+
+루트 파일시스템 `/`의 디스크 상태를 확인한다.
+
+확인 항목:
+
+- 전체 용량
+- 사용량
+- 남은 용량
+- 사용률
+- 마운트 위치
+
+예시:
+
+```text
+Filesystem                         Size  Used Avail Use%
+/dev/mapper/ubuntu--vg-ubuntu--lv   12G  5.5G  5.2G  52%
+```
+
+---
+
+## 10. Docker 서비스 상태 확인
+
+```bash
+systemctl is-active --quiet docker
+```
+
+Docker 데몬이 실행 중인지 확인한다.
+
+정상일 경우:
+
+```text
+OK: Docker service is running
+```
+
+비정상일 경우:
+
+```text
+FAIL: Docker service is not running
+```
+
+Docker 서비스가 중지되어 있으면 전체 상태 변수에 `1`을 저장한다.
+
+---
+
+## 11. Nginx 컨테이너 상태 확인
+
+다음 명령으로 컨테이너의 실행 상태를 확인한다.
+
+```bash
+docker inspect -f '{{.State.Running}}' home-idc-nginx
+```
+
+컨테이너가 정상 실행 중이면:
+
+```text
+true
+```
+
+가 출력된다.
+
+스크립트에서는 `grep -q true`를 이용해 결과를 판별했다.
+
+정상일 경우:
+
+```text
+OK: home-idc-nginx is running
+```
+
+비정상일 경우:
+
+```text
+FAIL: home-idc-nginx is not running
+```
+
+---
+
+## 12. HTTP 웹서비스 상태 확인
+
+```bash
+curl -fsS http://127.0.0.1:8080
+```
+
+Nginx 웹서비스가 실제 HTTP 요청에 응답하는지 확인한다.
+
+### curl 옵션
+
+- `-f`: HTTP 오류 응답을 실패로 처리
+- `-s`: 진행 상태를 표시하지 않음
+- `-S`: 오류가 발생하면 오류 메시지를 출력
+
+정상일 경우:
+
+```text
+OK: http://127.0.0.1:8080 responded
+```
+
+비정상일 경우:
+
+```text
+FAIL: http://127.0.0.1:8080 did not respond
+```
+
+컨테이너 프로세스가 실행 중이더라도 웹서비스가 정상 응답하지 않을 수 있으므로, 컨테이너 상태와 HTTP 상태를 각각 확인하도록 구성했다.
+
+---
+
+## 13. 종료 코드
+
+Linux 명령어와 스크립트는 실행이 끝날 때 종료 코드를 반환한다.
+
+```text
+0: 정상
+1 이상: 오류 또는 비정상
+```
+
+스크립트 마지막 부분:
+
+```bash
+echo "Exit code: $STATUS"
+exit "$STATUS"
+```
+
+모든 점검 항목이 정상이면:
+
+```text
+Exit code: 0
+```
+
+하나 이상의 장애가 감지되면:
+
+```text
+Exit code: 1
+```
+
+이 종료 코드는 이후 Cron, 모니터링 프로그램, 자동화 도구에서 성공과 실패를 판단할 때 사용할 수 있다.
+
+---
+
+## 14. 첫 번째 실행 결과
+
+스크립트를 실행했다.
+
+```bash
+/home/sungwoo/home-idc-lab/scripts/health-check.sh
+```
+
+첫 실행에서는 다음과 같은 결과가 나타났다.
+
+```text
+OK: Docker service is running
+FAIL: home-idc-nginx is not running
+OK: http://127.0.0.1:8080 responded
+
+Exit code: 1
+```
+
+HTTP 요청은 정상 응답했지만 컨테이너 상태 확인만 실패했다.
+
+컨테이너가 실제로 중지된 것이 아니라, 현재 사용자가 Docker 소켓에 접근할 권한이 없는 것이 원인이었다.
+
+---
+
+## 15. Docker 권한 문제 확인
+
+현재 사용자가 가입된 그룹을 확인했다.
+
+```bash
+groups
+```
+
+처음 출력:
+
+```text
+sungwoo adm cdrom sudo dip plugdev users lxd
+```
+
+출력에 `docker` 그룹이 없었다.
+
+일반 사용자가 `sudo` 없이 Docker 명령을 사용하려면 해당 사용자가 `docker` 그룹에 포함되어 있어야 한다.
+
+---
+
+## 16. 사용자를 Docker 그룹에 추가
+
+다음 명령으로 `sungwoo` 사용자를 Docker 그룹에 추가했다.
+
+```bash
+sudo usermod -aG docker sungwoo
+```
+
+### 옵션 의미
+
+- `-a`: 기존 그룹을 유지하면서 추가
+- `-G`: 보조 그룹 지정
+- `docker`: 추가할 그룹
+- `sungwoo`: 대상 사용자
+
+SSH에 다시 접속한 후 그룹을 확인했다.
+
+```bash
+groups
+```
+
+결과:
+
+```text
+sungwoo adm cdrom sudo dip plugdev users lxd docker
+```
+
+`docker` 그룹이 추가된 것을 확인했다.
+
+> Docker 그룹에 가입한 사용자는 컨테이너와 호스트 시스템에 강한 권한을 가질 수 있으므로, 운영 환경에서는 계정 관리에 주의해야 한다.
+
+---
+
+## 17. 정상 상태 점검
+
+권한 문제를 해결한 후 스크립트를 다시 실행했다.
+
+```bash
+/home/sungwoo/home-idc-lab/scripts/health-check.sh
+```
+
+결과:
+
+```text
+[DOCKER]
+OK: Docker service is running
+OK: home-idc-nginx is running
+
+[HTTP]
+OK: http://127.0.0.1:8080 responded
+
+Exit code: 0
+```
+
+Docker 서비스, 컨테이너, HTTP 응답이 모두 정상임을 확인했다.
+
+---
+
+## 18. 장애 상황 생성
+
+상태 점검 스크립트가 실제 장애를 감지하는지 확인하기 위해 Nginx 컨테이너를 중지했다.
+
+```bash
+docker stop home-idc-nginx
+```
+
+출력:
+
+```text
+home-idc-nginx
+```
+
+---
+
+## 19. 장애 감지 테스트
+
+컨테이너가 중지된 상태에서 스크립트를 다시 실행했다.
+
+```bash
+/home/sungwoo/home-idc-lab/scripts/health-check.sh
+```
+
+결과:
+
+```text
+[DOCKER]
+OK: Docker service is running
+FAIL: home-idc-nginx is not running
+
+[HTTP]
+curl: (7) Failed to connect to 127.0.0.1 port 8080
+FAIL: http://127.0.0.1:8080 did not respond
+
+Exit code: 1
+```
+
+점검 결과를 통해 다음 장애를 감지했다.
+
+- Docker 서비스 자체는 정상
+- Nginx 컨테이너 중지
+- HTTP 포트 8080 접속 실패
+- 최종 종료 코드 1 반환
+
+이를 통해 Docker 서비스와 개별 컨테이너 상태는 서로 다를 수 있다는 것을 확인했다.
+
+---
+
+## 20. Nginx 서비스 복구
+
+Docker Compose를 이용해 중지된 Nginx 컨테이너를 다시 시작했다.
+
+```bash
+cd /home/sungwoo/docker-nginx
+docker compose start nginx
+```
+
+출력:
+
+```text
+Container home-idc-nginx Starting
+Container home-idc-nginx Started
+```
+
+---
+
+## 21. 복구 상태 재확인
+
+서비스 복구 후 상태 점검 스크립트를 다시 실행했다.
+
+```bash
+/home/sungwoo/home-idc-lab/scripts/health-check.sh
+```
+
+결과:
+
+```text
+[DOCKER]
+OK: Docker service is running
+OK: home-idc-nginx is running
+
+[HTTP]
+OK: http://127.0.0.1:8080 responded
+
+Exit code: 0
+```
+
+장애 발생 후 컨테이너를 복구했고, 상태 점검 결과가 다시 정상으로 변경된 것을 확인했다.
+
+전체 테스트 흐름:
+
+```text
+정상 상태
+    ↓
+컨테이너 중지
+    ↓
+스크립트가 장애 감지
+    ↓
+Docker Compose로 서비스 복구
+    ↓
+스크립트로 정상 상태 재확인
+```
+
+---
+
+## 22. 점검 로그 디렉터리 생성
+
+점검 결과를 저장하기 위해 로그 디렉터리를 생성했다.
+
+```bash
+mkdir -p /home/sungwoo/home-idc-lab/logs
+```
+
+로그 파일 위치:
+
+```text
+/home/sungwoo/home-idc-lab/logs/health-check.log
+```
+
+---
+
+## 23. 점검 결과 로그 저장
+
+`tee` 명령을 이용해 점검 결과를 화면에 표시하면서 로그 파일에도 저장했다.
+
+```bash
+/home/sungwoo/home-idc-lab/scripts/health-check.sh \
+  | tee -a /home/sungwoo/home-idc-lab/logs/health-check.log
+```
+
+### tee 옵션
+
+- 화면에 명령 결과를 출력
+- 같은 결과를 파일에도 저장
+- `-a`: 기존 파일을 덮어쓰지 않고 마지막에 추가
+
+저장된 로그를 확인했다.
+
+```bash
+cat /home/sungwoo/home-idc-lab/logs/health-check.log
+```
+
+결과:
+
+```text
+===== Home IDC Health Check =====
+Time: 2026-07-20 12:15:48
+
+[DOCKER]
+OK: Docker service is running
+OK: home-idc-nginx is running
+
+[HTTP]
+OK: http://127.0.0.1:8080 responded
+
+Exit code: 0
+```
+
+---
+
+## 24. GitHub 업로드
+
+Ubuntu에 저장된 스크립트를 `scp` 명령으로 Windows에 복사했다.
+
+```powershell
+scp -P 2222 sungwoo@127.0.0.1:/home/sungwoo/home-idc-lab/scripts/health-check.sh .\health-check.sh
+```
+
+Windows에서 `scripts` 디렉터리를 생성하고 파일을 이동했다.
+
+```powershell
+New-Item -ItemType Directory -Path .\scripts -Force | Out-Null
+Move-Item .\health-check.sh .\scripts\health-check.sh
+```
+
+GitHub 저장소에는 다음 구조로 업로드했다.
+
+```text
+home-idc-lab/
+├── README.md
+├── compose.yaml
+└── scripts/
+    └── health-check.sh
+```
+
+커밋 메시지:
+
+```text
+feat: add server health check script
+```
+
+실제 스크립트 파일을 저장소에 추가하여 README 설명뿐 아니라 실행 가능한 결과물도 확인할 수 있도록 구성했다.
+
+---
+
+## 25. 오늘 발생한 문제와 해결 과정
+
+### 문제 1: VirtualBox 콘솔에서 긴 코드 붙여넣기 어려움
+
+원인:
+
+- VirtualBox Ubuntu 콘솔에서 클립보드 사용이 불편함
+- 긴 스크립트를 직접 입력하면 오타가 발생할 가능성이 높음
+
+해결:
+
+- Windows PowerShell 사용
+- SSH를 통해 Ubuntu 파일 생성
+- SCP를 이용해 Windows와 Ubuntu 사이에서 파일 복사
+
+---
+
+### 문제 2: 컨테이너가 실행 중인데 FAIL로 표시됨
+
+증상:
+
+```text
+FAIL: home-idc-nginx is not running
+OK: http://127.0.0.1:8080 responded
+```
+
+원인:
+
+- `sungwoo` 사용자가 Docker 그룹에 포함되어 있지 않음
+- `docker inspect` 명령 실행 권한 부족
+- 오류 출력을 숨겼기 때문에 컨테이너 중지로 판단됨
+
+해결:
+
+```bash
+sudo usermod -aG docker sungwoo
+```
+
+새 SSH 세션에서 Docker 그룹 가입 상태를 확인했다.
+
+```bash
+groups
+```
+
+---
+
+### 문제 3: 실제 장애 감지 검증 필요
+
+스크립트가 정상 상태만 출력한다고 해서 장애 감지 기능이 검증된 것은 아니다.
+
+해결:
+
+1. Nginx 컨테이너를 직접 중지
+2. 컨테이너와 HTTP 상태가 `FAIL`인지 확인
+3. 종료 코드가 `1`인지 확인
+4. Docker Compose로 컨테이너 복구
+5. 다시 모든 항목이 `OK`인지 확인
+
+---
+
+## 26. 오늘 배운 내용
+
+- Bash 스크립트는 여러 서버 점검 명령을 자동화할 수 있다.
+- `uptime`으로 서버 부하와 가동 시간을 확인할 수 있다.
+- `free -h`로 메모리 상태를 확인할 수 있다.
+- `df -h /`로 루트 디스크 사용량을 확인할 수 있다.
+- `systemctl is-active`로 서비스 상태를 확인할 수 있다.
+- `docker inspect`로 컨테이너의 실제 실행 상태를 확인할 수 있다.
+- `curl`로 웹서비스가 실제 HTTP 요청에 응답하는지 확인할 수 있다.
+- Linux에서 종료 코드 `0`은 정상, `1`은 실패를 의미한다.
+- Docker 서비스가 실행 중이어도 개별 컨테이너는 중지될 수 있다.
+- 정상 테스트뿐 아니라 장애 발생과 복구 테스트도 중요하다.
+- `tee -a`를 사용하면 출력 결과를 보면서 로그 파일에 추가 저장할 수 있다.
+- `chmod +x`로 스크립트 실행 권한을 부여할 수 있다.
+- PowerShell, SSH, SCP를 이용해 Windows에서 Ubuntu 서버를 관리할 수 있다.
+- Docker 그룹은 편리하지만 강한 권한을 제공하므로 계정 관리가 중요하다.
+
+---
+
+## 27. Day 9 결과
+
+- Bash 상태 점검 스크립트 작성 완료
+- CPU 및 서버 가동 시간 점검 완료
+- 메모리와 디스크 점검 완료
+- Docker 서비스 상태 점검 완료
+- Nginx 컨테이너 상태 점검 완료
+- HTTP 응답 점검 완료
+- 정상 상태에서 종료 코드 0 확인
+- 장애 상태에서 종료 코드 1 확인
+- Nginx 컨테이너 장애 및 복구 실습 완료
+- 점검 결과 로그 저장 완료
+- `scripts/health-check.sh` GitHub 업로드 완료
+
+---
+
+## 28. 다음 실습 계획
+
+- Cron을 이용한 상태 점검 자동 실행
+- 일정 시간마다 로그 파일 생성
+- 로그 파일 크기 및 보관 방법 관리
+- 장애 발생 기록 확인
+- 웹 콘텐츠 자동 백업
+- 백업 파일 압축 및 복원
+- AWS S3 백업 연동
+
+---
+
+
+
 # Day 8 - Docker Compose를 이용한 Nginx 서비스 관리
 
 ## 1. 실습 목표
