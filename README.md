@@ -1,3 +1,677 @@
+# Day 10 - Cron을 이용한 서버 상태 점검 자동화
+
+## 1. 실습 목표
+
+- Linux Cron 서비스 상태 확인
+- 사용자 Crontab 확인
+- Bash 상태 점검 스크립트 자동 실행
+- 점검 결과를 로그 파일에 누적 저장
+- 1분 주기로 자동 실행 테스트
+- 컨테이너 장애 자동 감지 확인
+- 서비스 복구 상태 자동 기록 확인
+- 최종 실행 주기를 5분으로 변경
+- 시스템 로그에서 Cron 실행 이력 확인
+- Cron 설정 파일을 GitHub에 업로드
+
+---
+
+## 2. Cron이란?
+
+Cron은 Linux에서 명령어나 스크립트를 정해진 시간마다 자동으로 실행하는 작업 스케줄러다.
+
+서버 관리자는 Cron을 이용해 다음과 같은 작업을 자동화할 수 있다.
+
+- 서버 상태 점검
+- 로그 파일 정리
+- 데이터 백업
+- 임시 파일 삭제
+- 서비스 상태 확인
+- 정기 보고서 생성
+- 클라우드 스토리지 업로드
+
+이번 실습에서는 Day 9에서 작성한 상태 점검 스크립트를 Cron에 등록해 자동 실행되도록 구성했다.
+
+자동 실행 대상 스크립트:
+
+```text
+/home/sungwoo/home-idc-lab/scripts/health-check.sh
+```
+
+로그 저장 위치:
+
+```text
+/home/sungwoo/home-idc-lab/logs/cron-health-check.log
+```
+
+---
+
+## 3. Cron 서비스 상태 확인
+
+다음 명령으로 Cron 서비스가 실행 중인지 확인했다.
+
+```bash
+systemctl is-active cron
+```
+
+출력 결과:
+
+```text
+active
+```
+
+`active`는 Cron 서비스가 현재 정상 실행 중이라는 뜻이다.
+
+Cron 서비스가 중지되어 있으면 Crontab에 작업을 등록해도 자동으로 실행되지 않는다.
+
+---
+
+## 4. 기존 Crontab 확인
+
+현재 사용자에게 등록된 Cron 작업을 확인했다.
+
+```bash
+crontab -l
+```
+
+기존 작업이 없을 경우 다음과 같은 메시지가 발생할 수 있기 때문에, 오류 출력을 숨기고 별도 문구를 표시했다.
+
+```bash
+crontab -l 2>/dev/null || echo NO_CRON_JOBS
+```
+
+출력 결과:
+
+```text
+NO_CRON_JOBS
+```
+
+아직 `sungwoo` 사용자에게 등록된 Cron 작업이 없다는 것을 확인했다.
+
+---
+
+## 5. 1분 주기 테스트 작업 등록
+
+자동 실행 여부를 빠르게 확인하기 위해 처음에는 상태 점검 스크립트를 1분마다 실행하도록 등록했다.
+
+```bash
+(crontab -l 2>/dev/null; echo '* * * * * /home/sungwoo/home-idc-lab/scripts/health-check.sh >> /home/sungwoo/home-idc-lab/logs/cron-health-check.log 2>&1') | crontab -
+```
+
+등록된 작업:
+
+```cron
+* * * * * /home/sungwoo/home-idc-lab/scripts/health-check.sh >> /home/sungwoo/home-idc-lab/logs/cron-health-check.log 2>&1
+```
+
+---
+
+## 6. Crontab 시간 형식
+
+Crontab의 기본 형식은 다음과 같다.
+
+```text
+분 시 일 월 요일 실행할 명령어
+```
+
+각 필드의 의미:
+
+```text
+* * * * *
+│ │ │ │ │
+│ │ │ │ └─ 요일: 0~7, 일요일은 0 또는 7
+│ │ │ └─── 월: 1~12
+│ │ └───── 일: 1~31
+│ └─────── 시: 0~23
+└───────── 분: 0~59
+```
+
+이번 테스트 설정:
+
+```cron
+* * * * *
+```
+
+모든 항목에 `*`가 사용되었기 때문에 매분 실행된다.
+
+---
+
+## 7. 로그 저장 설정
+
+Cron 작업 뒤에 다음 리다이렉션을 추가했다.
+
+```bash
+>> /home/sungwoo/home-idc-lab/logs/cron-health-check.log 2>&1
+```
+
+각 기호의 의미:
+
+### `>>`
+
+명령어의 표준 출력을 파일 마지막에 추가한다.
+
+기존 로그를 덮어쓰지 않고 계속 누적한다.
+
+### `2>&1`
+
+표준 오류를 표준 출력과 같은 위치에 저장한다.
+
+따라서 다음 내용이 모두 하나의 로그 파일에 기록된다.
+
+- 정상 출력
+- Docker 상태
+- HTTP 상태
+- curl 오류
+- 장애 메시지
+
+---
+
+## 8. 등록된 Crontab 확인
+
+다음 명령으로 등록된 작업을 확인했다.
+
+```bash
+crontab -l
+```
+
+출력:
+
+```cron
+* * * * * /home/sungwoo/home-idc-lab/scripts/health-check.sh >> /home/sungwoo/home-idc-lab/logs/cron-health-check.log 2>&1
+```
+
+Crontab이 정상적으로 등록된 것을 확인했다.
+
+---
+
+## 9. Cron 자동 실행 로그 확인
+
+Cron이 자동으로 생성한 로그의 마지막 부분을 확인했다.
+
+```bash
+tail -n 30 /home/sungwoo/home-idc-lab/logs/cron-health-check.log
+```
+
+출력 예시:
+
+```text
+===== Home IDC Health Check =====
+Time: 2026-07-20 14:41:01
+
+[CPU / UPTIME]
+14:41:01 up 14:16, 1 user, load average: 0.05, 0.02, 0.00
+
+[MEMORY]
+Mem: 3.3Gi 588Mi 980Mi
+
+[DISK]
+/dev/mapper/ubuntu--vg-ubuntu--lv 12G 5.5G 5.2G 52% /
+
+[DOCKER]
+OK: Docker service is running
+OK: home-idc-nginx is running
+
+[HTTP]
+OK: http://127.0.0.1:8080 responded
+
+Exit code: 0
+```
+
+직접 스크립트를 실행하지 않아도 Cron이 매분 자동으로 점검 결과를 기록하는 것을 확인했다.
+
+---
+
+## 10. 장애 상황 생성
+
+Cron이 장애도 자동으로 감지하는지 테스트하기 위해 Nginx 컨테이너를 중지했다.
+
+```bash
+docker stop home-idc-nginx
+```
+
+출력:
+
+```text
+home-idc-nginx
+```
+
+Docker 서비스 자체는 실행 중이지만 Nginx 컨테이너만 중지된 상태를 만들었다.
+
+---
+
+## 11. Cron 장애 자동 감지 확인
+
+약 1분 후 Cron 로그를 다시 확인했다.
+
+```bash
+tail -n 25 /home/sungwoo/home-idc-lab/logs/cron-health-check.log
+```
+
+장애 상태가 다음과 같이 기록되었다.
+
+```text
+===== Home IDC Health Check =====
+Time: 2026-07-20 14:43:01
+
+[DOCKER]
+OK: Docker service is running
+FAIL: home-idc-nginx is not running
+
+[HTTP]
+curl: (7) Failed to connect to 127.0.0.1 port 8080
+FAIL: http://127.0.0.1:8080 did not respond
+
+Exit code: 1
+```
+
+Cron이 자동으로 다음 장애를 감지했다.
+
+- Docker 서비스는 실행 중
+- Nginx 컨테이너는 중지 상태
+- HTTP 8080 포트 응답 실패
+- 종료 코드 1 반환
+- 오류 내용까지 로그에 저장
+
+---
+
+## 12. Nginx 서비스 복구
+
+Docker Compose를 이용해 중지된 Nginx 서비스를 다시 시작했다.
+
+```bash
+cd /home/sungwoo/docker-nginx
+docker compose start nginx
+```
+
+출력:
+
+```text
+Container home-idc-nginx Starting
+Container home-idc-nginx Started
+```
+
+---
+
+## 13. 복구 상태 자동 기록 확인
+
+약 1분 후 Cron 로그를 다시 확인했다.
+
+```bash
+tail -n 25 /home/sungwoo/home-idc-lab/logs/cron-health-check.log
+```
+
+복구 후 결과:
+
+```text
+===== Home IDC Health Check =====
+Time: 2026-07-20 14:45:01
+
+[DOCKER]
+OK: Docker service is running
+OK: home-idc-nginx is running
+
+[HTTP]
+OK: http://127.0.0.1:8080 responded
+
+Exit code: 0
+```
+
+장애 발생 후 서비스를 복구하자 Cron이 다음 실행 시점에 정상 상태를 자동으로 기록했다.
+
+전체 흐름:
+
+```text
+정상 상태
+    ↓
+Cron 자동 점검: Exit code 0
+    ↓
+Nginx 컨테이너 중지
+    ↓
+Cron 자동 점검: Exit code 1
+    ↓
+Docker Compose로 복구
+    ↓
+Cron 자동 점검: Exit code 0
+```
+
+---
+
+## 14. 최종 실행 주기를 5분으로 변경
+
+1분 주기는 테스트에는 편리하지만 로그가 너무 빠르게 증가할 수 있다.
+
+기존 상태 점검 Cron 줄을 제거하고 5분 주기로 다시 등록했다.
+
+```bash
+(crontab -l 2>/dev/null | grep -v 'health-check.sh'; echo '*/5 * * * * /home/sungwoo/home-idc-lab/scripts/health-check.sh >> /home/sungwoo/home-idc-lab/logs/cron-health-check.log 2>&1') | crontab -
+```
+
+최종 설정:
+
+```cron
+*/5 * * * * /home/sungwoo/home-idc-lab/scripts/health-check.sh >> /home/sungwoo/home-idc-lab/logs/cron-health-check.log 2>&1
+```
+
+`*/5`는 5분 간격으로 실행한다는 뜻이다.
+
+실행 시각 예시:
+
+```text
+14:00
+14:05
+14:10
+14:15
+14:20
+```
+
+---
+
+## 15. 최종 Crontab 확인
+
+다음 명령으로 최종 설정을 확인했다.
+
+```bash
+crontab -l
+```
+
+출력:
+
+```cron
+*/5 * * * * /home/sungwoo/home-idc-lab/scripts/health-check.sh >> /home/sungwoo/home-idc-lab/logs/cron-health-check.log 2>&1
+```
+
+상태 점검 스크립트가 5분마다 자동 실행되도록 최종 설정되었다.
+
+---
+
+## 16. 시스템 로그에서 Cron 실행 이력 확인
+
+Cron 작업이 실제 실행되었는지 운영체제의 시스템 로그에서도 확인했다.
+
+```bash
+grep CRON /var/log/syslog | tail -n 10
+```
+
+상태 점검 스크립트 관련 기록만 확인할 때는 다음 명령을 사용했다.
+
+```bash
+grep 'health-check.sh' /var/log/syslog | tail -n 5
+```
+
+1분 주기 테스트 실행 기록:
+
+```text
+2026-07-20T14:43:01+00:00 home-idc-ubuntu CRON: (sungwoo) CMD (/home/sungwoo/home-idc-lab/scripts/health-check.sh ...)
+2026-07-20T14:44:01+00:00 home-idc-ubuntu CRON: (sungwoo) CMD (/home/sungwoo/home-idc-lab/scripts/health-check.sh ...)
+2026-07-20T14:45:01+00:00 home-idc-ubuntu CRON: (sungwoo) CMD (/home/sungwoo/home-idc-lab/scripts/health-check.sh ...)
+2026-07-20T14:46:01+00:00 home-idc-ubuntu CRON: (sungwoo) CMD (/home/sungwoo/home-idc-lab/scripts/health-check.sh ...)
+```
+
+5분 주기로 변경한 후 실행 기록:
+
+```text
+2026-07-20T14:50:01+00:00 home-idc-ubuntu CRON: (sungwoo) CMD (/home/sungwoo/home-idc-lab/scripts/health-check.sh ...)
+```
+
+최신 실행 시간이 `14:50:01`로 기록되어 5분 주기 설정이 실제 적용된 것을 확인했다.
+
+---
+
+## 17. Crontab 로그와 애플리케이션 로그의 차이
+
+이번 실습에서는 두 종류의 로그를 확인했다.
+
+### 시스템 Cron 로그
+
+```text
+/var/log/syslog
+```
+
+Cron이 어떤 명령을 언제 실행했는지 확인할 수 있다.
+
+예시:
+
+```text
+CRON: (sungwoo) CMD (/home/sungwoo/home-idc-lab/scripts/health-check.sh ...)
+```
+
+### 상태 점검 결과 로그
+
+```text
+/home/sungwoo/home-idc-lab/logs/cron-health-check.log
+```
+
+실제 점검 결과를 확인할 수 있다.
+
+예시:
+
+```text
+OK: Docker service is running
+FAIL: home-idc-nginx is not running
+Exit code: 1
+```
+
+두 로그를 함께 확인하면 다음을 구분할 수 있다.
+
+```text
+Cron이 명령을 실행했는가?
+        ↓
+/var/log/syslog 확인
+
+실행된 점검 결과는 무엇인가?
+        ↓
+cron-health-check.log 확인
+```
+
+---
+
+## 18. Cron 설정 파일 저장
+
+현재 사용자에게 등록된 Crontab을 프로젝트 파일로 저장했다.
+
+```bash
+mkdir -p /home/sungwoo/home-idc-lab/cron
+```
+
+```bash
+crontab -l > /home/sungwoo/home-idc-lab/cron/health-check.cron
+```
+
+저장된 파일 위치:
+
+```text
+/home/sungwoo/home-idc-lab/cron/health-check.cron
+```
+
+파일 내용:
+
+```cron
+*/5 * * * * /home/sungwoo/home-idc-lab/scripts/health-check.sh >> /home/sungwoo/home-idc-lab/logs/cron-health-check.log 2>&1
+```
+
+Crontab은 사용자 계정 설정에 저장되기 때문에 일반 프로젝트 파일처럼 자동으로 GitHub에 포함되지 않는다.
+
+따라서 현재 설정을 별도 파일로 내보내 저장소에 추가했다.
+
+---
+
+## 19. Windows로 Cron 설정 복사
+
+SCP를 이용해 Ubuntu의 Cron 설정 파일을 Windows로 복사했다.
+
+```powershell
+New-Item -ItemType Directory -Path .\cron -Force | Out-Null
+scp -P 2222 sungwoo@127.0.0.1:/home/sungwoo/home-idc-lab/cron/health-check.cron .\cron\health-check.cron
+```
+
+Windows에서 파일을 확인했다.
+
+```powershell
+explorer .\cron
+```
+
+확인된 파일:
+
+```text
+cron/health-check.cron
+```
+
+---
+
+## 20. GitHub 업로드
+
+GitHub 저장소에 다음 구조로 Cron 설정 파일을 업로드했다.
+
+```text
+hhome-idc-lab/
+├── README.md
+├── compose.yaml
+├── scripts/
+│   └── health-check.sh
+└── cron/
+    └── health-check.cron
+```
+
+커밋 메시지:
+
+```text
+feat: add cron health check schedule
+```
+
+실제 Cron 설정을 저장소에 포함해 다른 서버에서도 동일한 스케줄을 확인하고 재현할 수 있도록 구성했다.
+
+---
+
+## 21. Cron 설정 복원 방법
+
+저장소를 새로운 Ubuntu 서버에 내려받은 경우 다음 명령으로 Cron 설정을 등록할 수 있다.
+
+```bash
+crontab cron/health-check.cron
+```
+
+등록 결과 확인:
+
+```bash
+crontab -l
+```
+
+주의할 점:
+
+- 스크립트 경로가 실제 서버와 일치해야 한다.
+- 스크립트에 실행 권한이 있어야 한다.
+- 로그 디렉터리가 존재해야 한다.
+- Docker 명령을 실행할 권한이 필요하다.
+- Cron 서비스가 실행 중이어야 한다.
+
+---
+
+## 22. 오늘 발생한 문제와 해결 과정
+
+### 문제 1: 등록된 Cron 작업이 없음
+
+확인 결과:
+
+```text
+NO_CRON_JOBS
+```
+
+해결:
+
+- Day 9 상태 점검 스크립트를 Crontab에 새로 등록
+- 처음에는 테스트를 위해 매분 실행하도록 구성
+
+---
+
+### 문제 2: 자동 실행 여부를 빠르게 확인해야 함
+
+처음부터 5분 또는 1시간 주기로 설정하면 테스트 시간이 오래 걸린다.
+
+해결:
+
+1. 처음에는 `* * * * *`로 매분 실행
+2. 정상 동작 확인
+3. 장애 및 복구 자동 기록 확인
+4. 최종적으로 `*/5 * * * *`로 변경
+
+---
+
+### 문제 3: 표준 오류가 로그에서 누락될 수 있음
+
+일반 출력만 저장하면 `curl` 오류와 같은 장애 메시지가 누락될 수 있다.
+
+해결:
+
+```bash
+2>&1
+```
+
+을 추가해 표준 오류도 같은 로그 파일에 저장했다.
+
+---
+
+### 문제 4: Cron이 실행되지 않은 것인지 스크립트가 실패한 것인지 구분 필요
+
+로그 파일에 내용이 없을 경우 두 가지 가능성이 있다.
+
+- Cron이 명령을 실행하지 않음
+- Cron은 실행했지만 스크립트 내부에서 오류 발생
+
+해결:
+
+- `/var/log/syslog`에서 Cron 실행 여부 확인
+- `cron-health-check.log`에서 스크립트 결과 확인
+
+---
+
+## 23. 오늘 배운 내용
+
+- Cron은 Linux의 정기 작업 자동화 도구다.
+- `systemctl is-active cron`으로 Cron 서비스 상태를 확인할 수 있다.
+- `crontab -l`로 현재 사용자의 작업을 확인할 수 있다.
+- `* * * * *`는 매분 실행을 의미한다.
+- `*/5 * * * *`는 5분마다 실행을 의미한다.
+- `>>`는 기존 파일에 출력을 누적 저장한다.
+- `2>&1`은 오류 출력도 같은 로그 파일에 저장한다.
+- Cron은 사용자가 로그인하지 않아도 작업을 실행할 수 있다.
+- 장애 상태와 복구 상태를 모두 자동으로 기록할 수 있다.
+- `/var/log/syslog`에서 Cron 실행 이력을 확인할 수 있다.
+- Crontab 설정을 파일로 내보내 GitHub에서 관리할 수 있다.
+- 자동화는 정상 상태뿐 아니라 실제 장애 테스트가 필요하다.
+- 테스트 주기와 운영 주기를 구분하는 것이 중요하다.
+
+---
+
+## 24. Day 10 결과
+
+- Cron 서비스 정상 상태 확인
+- 기존 Crontab 확인
+- 상태 점검 스크립트 매분 자동 실행 테스트 완료
+- 자동 로그 생성 확인
+- 컨테이너 장애 자동 감지 확인
+- HTTP 장애 자동 감지 확인
+- 오류 메시지 로그 저장 확인
+- 서비스 복구 후 정상 상태 자동 기록 확인
+- 최종 실행 주기를 5분으로 변경
+- 시스템 로그에서 실제 Cron 실행 기록 확인
+- `cron/health-check.cron` 파일 생성 완료
+- GitHub 업로드 완료
+
+---
+
+## 25. 다음 실습 계획
+
+- 웹 콘텐츠 자동 백업 스크립트 작성
+- 날짜가 포함된 백업 파일 생성
+- `tar.gz` 압축 백업
+- 백업 파일 무결성 확인
+- 원본 파일 삭제 후 복원 테스트
+- 오래된 백업 자동 삭제
+- Cron을 이용한 정기 백업
+- AWS S3 백업 연동
+
+---
+
+
 # Day 9 - Bash 서버 상태 점검 스크립트
 
 ## 1. 실습 목표
