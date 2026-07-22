@@ -1,0 +1,2 @@
+*/5 * * * * /home/sungwoo/home-idc-lab/scripts/health-check.sh >> /home/sungwoo/home-idc-lab/logs/cron-health-check.log 2>&1
+0 2 * * * /home/sungwoo/home-idc-lab/scripts/backup-nginx.sh >> /home/sungwoo/home-idc-lab/logs/backup.log 2>&1
