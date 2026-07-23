@@ -1,3 +1,1471 @@
+# Day 14 - AWS EC2 웹 서버 구축 및 CloudWatch 모니터링
+
+## 1. 실습 목표
+
+이번 실습에서는 AWS 클라우드 환경에 Ubuntu EC2 인스턴스를 생성하고 Nginx 웹 서버를 구축했다.
+
+또한 Amazon CloudWatch와 Amazon SNS를 이용해 EC2의 CPU 사용률을 모니터링하고, CPU 사용률이 설정한 임계값을 초과하면 이메일 알림을 받을 수 있도록 구성했다.
+
+실습 목표는 다음과 같다.
+
+- AWS EC2 Ubuntu 인스턴스 생성
+- EC2 키 페어 생성 및 SSH 접속
+- 보안 그룹을 이용한 SSH 및 HTTP 포트 허용
+- Nginx 웹 서버 설치
+- 사용자 정의 웹페이지 배포
+- EC2 퍼블릭 IP를 이용한 외부 접속 확인
+- CloudWatch를 이용한 CPU 사용률 모니터링
+- CPU 사용률 임계값 기반 경보 생성
+- Amazon SNS 이메일 알림 연동
+- CPU 부하 발생을 통한 경보 테스트
+- 실습 완료 후 AWS 리소스 정리
+
+---
+
+## 2. 전체 구성 구조
+
+이번 실습의 전체 구성은 다음과 같다.
+
+```text
+사용자 웹 브라우저
+        ↓
+EC2 퍼블릭 IP:80
+        ↓
+AWS Security Group
+        ↓
+EC2 Ubuntu Server
+        ↓
+Nginx Web Server
+```
+
+모니터링과 알림 구조는 다음과 같다.
+
+```text
+EC2 CPUUtilization
+        ↓
+Amazon CloudWatch
+        ↓
+CloudWatch Alarm
+        ↓
+Amazon SNS Topic
+        ↓
+이메일 알림
+```
+
+EC2에서 발생하는 CPU 사용률 지표를 CloudWatch가 수집하고, 설정한 임계값을 초과하면 CloudWatch Alarm이 경보 상태로 변경된다.
+
+CloudWatch Alarm은 SNS 주제에 알림을 전달하고, SNS는 구독이 승인된 이메일 주소로 경보 내용을 전송한다.
+
+---
+
+## 3. 사용한 AWS 서비스
+
+이번 실습에서 사용한 AWS 서비스는 다음과 같다.
+
+| AWS 서비스 | 사용 목적 |
+|---|---|
+| Amazon EC2 | Ubuntu 웹 서버 실행 |
+| Security Group | SSH 및 HTTP 접근 제어 |
+| Amazon EBS | EC2 운영체제와 데이터 저장 |
+| Amazon CloudWatch | EC2 CPU 사용률 모니터링 |
+| CloudWatch Alarm | CPU 임계값 초과 감지 |
+| Amazon SNS | 경보 이메일 전달 |
+| EC2 Key Pair | SSH 공개 키 인증 |
+
+---
+
+## 4. EC2 인스턴스 생성
+
+AWS Management Console에서 EC2 서비스로 이동한 후 새로운 인스턴스를 생성했다.
+
+인스턴스의 주요 설정은 다음과 같다.
+
+```text
+운영체제: Ubuntu Server
+인스턴스 유형: 프리 티어 사용 가능 유형
+네트워크: 기본 VPC
+퍼블릭 IP: 자동 할당
+스토리지: 기본 EBS 볼륨
+```
+
+Ubuntu Server 이미지를 선택한 이유는 Linux 서버 운영과 Nginx 웹 서버 구축 실습에 적합하기 때문이다.
+
+EC2 인스턴스가 생성되면 AWS 데이터센터의 가상 서버를 인터넷을 통해 사용할 수 있다.
+
+---
+
+## 5. EC2 키 페어 생성
+
+EC2 인스턴스에 SSH로 접속하기 위해 새로운 키 페어를 생성했다.
+
+키 페어를 생성하면 개인 키 파일이 내려받아진다.
+
+```text
+키 페어 이름: 실습용 EC2 키 페어
+키 유형: RSA 또는 ED25519
+개인 키 형식: .pem
+```
+
+키 페어는 다음 구조로 사용된다.
+
+```text
+사용자 컴퓨터의 개인 키
+          ↓
+SSH 인증 요청
+          ↓
+EC2에 등록된 공개 키
+          ↓
+인증 성공
+```
+
+`.pem` 파일은 EC2에 접속하기 위한 개인 키이므로 외부에 공개하거나 GitHub에 업로드하면 안 된다.
+
+프로젝트 저장소에서도 다음 파일은 관리 대상에서 제외해야 한다.
+
+```gitignore
+*.pem
+*.key
+```
+
+---
+
+## 6. 보안 그룹 설정
+
+EC2 인스턴스에 접근하기 위해 보안 그룹의 인바운드 규칙을 설정했다.
+
+설정한 주요 규칙은 다음과 같다.
+
+| 유형 | 프로토콜 | 포트 | 목적 |
+|---|---|---:|---|
+| SSH | TCP | 22 | EC2 원격 접속 |
+| HTTP | TCP | 80 | Nginx 웹페이지 접속 |
+
+SSH 22번 포트는 서버 관리자가 원격으로 접속하기 위해 사용된다.
+
+HTTP 80번 포트는 외부 사용자가 웹 브라우저로 Nginx 웹 서버에 접근하기 위해 사용된다.
+
+보안 그룹의 동작 구조는 다음과 같다.
+
+```text
+인터넷 사용자
+      ↓
+보안 그룹 인바운드 규칙 확인
+      ↓
+허용된 포트만 EC2에 전달
+      ↓
+EC2 서비스 응답
+```
+
+보안 그룹은 상태 저장 방식으로 동작하므로 허용된 인바운드 요청에 대한 응답 트래픽은 자동으로 허용된다.
+
+---
+
+## 7. EC2 인스턴스 실행 상태 확인
+
+EC2 인스턴스를 생성한 후 인스턴스 상태를 확인했다.
+
+```text
+Instance state: Running
+Status check: 2/2 checks passed
+```
+
+EC2 상태 검사는 다음 두 항목을 확인한다.
+
+- 시스템 상태 검사
+- 인스턴스 상태 검사
+
+`2/2 checks passed`가 표시되면 AWS 인프라와 인스턴스 운영체제가 모두 정상적으로 동작하고 있다는 의미다.
+
+또한 SSH와 웹 접속에 사용할 퍼블릭 IPv4 주소를 확인했다.
+
+```text
+Public IPv4 address: EC2에 할당된 퍼블릭 IP
+```
+
+퍼블릭 IP는 인스턴스를 중지하거나 다시 생성하면 변경될 수 있으므로 실습 중 현재 주소를 확인해야 한다.
+
+---
+
+## 8. SSH를 이용한 EC2 접속
+
+로컬 컴퓨터에서 내려받은 `.pem` 개인 키를 이용해 EC2 Ubuntu 서버에 접속했다.
+
+SSH 접속 형식은 다음과 같다.
+
+```bash
+ssh -i <키파일.pem> ubuntu@<EC2_PUBLIC_IP>
+```
+
+명령어의 의미는 다음과 같다.
+
+- `ssh`: 원격 서버에 보안 연결
+- `-i`: 인증에 사용할 개인 키 지정
+- `<키파일.pem>`: EC2 키 페어 생성 시 내려받은 개인 키
+- `ubuntu`: Ubuntu EC2의 기본 사용자
+- `<EC2_PUBLIC_IP>`: EC2에 할당된 퍼블릭 IPv4 주소
+
+처음 접속할 때 서버의 호스트 키를 신뢰할 것인지 묻는 메시지가 나타날 수 있다.
+
+```text
+Are you sure you want to continue connecting (yes/no/[fingerprint])?
+```
+
+다음과 같이 입력했다.
+
+```text
+yes
+```
+
+접속에 성공하면 프롬프트가 다음과 같은 형태로 변경된다.
+
+```text
+ubuntu@ip-xxx-xxx-xxx-xxx:~$
+```
+
+이를 통해 로컬 컴퓨터가 아닌 AWS EC2 Ubuntu 서버에 접속한 것을 확인했다.
+
+---
+
+## 9. Ubuntu 패키지 목록 업데이트
+
+Nginx를 설치하기 전에 Ubuntu 패키지 목록을 업데이트했다.
+
+```bash
+sudo apt update
+```
+
+명령어의 의미는 다음과 같다.
+
+- `sudo`: 관리자 권한으로 명령 실행
+- `apt`: Ubuntu 패키지 관리 도구
+- `update`: 사용 가능한 패키지 목록 갱신
+
+`apt update`는 프로그램을 직접 업그레이드하는 명령이 아니라, Ubuntu 저장소에서 최신 패키지 정보를 가져오는 명령이다.
+
+패키지 목록을 최신 상태로 만든 후 필요한 프로그램을 설치해야 오래된 패키지 정보로 인한 오류를 줄일 수 있다.
+
+---
+
+## 10. Nginx 웹 서버 설치
+
+다음 명령어로 Nginx 웹 서버를 설치했다.
+
+```bash
+sudo apt install nginx -y
+```
+
+명령어의 의미는 다음과 같다.
+
+- `apt install`: 패키지 설치
+- `nginx`: 설치할 웹 서버 패키지
+- `-y`: 설치 과정의 확인 질문에 자동으로 동의
+
+설치가 완료된 후 Nginx 서비스 상태를 확인했다.
+
+```bash
+sudo systemctl status nginx
+```
+
+정상적으로 실행 중이면 다음 상태가 표시된다.
+
+```text
+Active: active (running)
+```
+
+`active (running)`은 Nginx 프로세스가 현재 정상적으로 실행되고 있다는 의미다.
+
+상태 확인 화면에서 나오기 위해 다음 키를 눌렀다.
+
+```text
+q
+```
+
+---
+
+## 11. Nginx 자동 시작 설정
+
+EC2가 재부팅되어도 Nginx가 자동으로 실행되도록 서비스를 활성화했다.
+
+```bash
+sudo systemctl enable nginx
+```
+
+현재 서비스를 즉시 실행하고 자동 시작까지 함께 설정하려면 다음 명령도 사용할 수 있다.
+
+```bash
+sudo systemctl enable --now nginx
+```
+
+옵션의 의미는 다음과 같다.
+
+- `enable`: 부팅 시 서비스 자동 실행 설정
+- `--now`: 설정과 동시에 현재 서비스도 즉시 실행
+
+자동 시작 여부를 확인했다.
+
+```bash
+sudo systemctl is-enabled nginx
+```
+
+정상적으로 설정되면 다음 결과가 나타난다.
+
+```text
+enabled
+```
+
+현재 실행 상태도 다시 확인했다.
+
+```bash
+sudo systemctl is-active nginx
+```
+
+정상적인 결과는 다음과 같다.
+
+```text
+active
+```
+
+---
+
+## 12. 웹 브라우저에서 Nginx 접속 확인
+
+Nginx 설치 후 로컬 컴퓨터의 웹 브라우저에서 EC2 퍼블릭 IP로 접속했다.
+
+```text
+http://<EC2_PUBLIC_IP>
+```
+
+Nginx 기본 환영 페이지가 나타나 웹 서버가 정상적으로 동작하는 것을 확인했다.
+
+접속 흐름은 다음과 같다.
+
+```text
+웹 브라우저
+      ↓ HTTP 요청
+EC2 퍼블릭 IP:80
+      ↓
+보안 그룹 HTTP 허용
+      ↓
+Nginx
+      ↓ HTTP 응답
+웹 브라우저
+```
+
+웹페이지가 보인다는 것은 다음 항목이 모두 정상이라는 의미다.
+
+- EC2 인스턴스 실행
+- EC2 퍼블릭 IP 통신
+- 보안 그룹 80번 포트 허용
+- Nginx 설치
+- Nginx 서비스 실행
+- HTTP 요청 처리
+
+---
+
+## 13. Nginx 웹 루트 디렉터리 확인
+
+Ubuntu에 설치된 Nginx의 기본 웹 루트 디렉터리는 다음과 같다.
+
+```text
+/var/www/html
+```
+
+디렉터리 내용을 확인했다.
+
+```bash
+ls -al /var/www/html
+```
+
+기본 웹페이지 파일을 확인했다.
+
+```bash
+cat /var/www/html/index.nginx-debian.html
+```
+
+Nginx는 클라이언트가 웹페이지를 요청하면 웹 루트 디렉터리에 있는 HTML 파일을 읽어 응답한다.
+
+```text
+웹 브라우저 요청
+       ↓
+Nginx
+       ↓
+/var/www/html
+       ↓
+HTML 파일 반환
+```
+
+---
+
+## 14. 사용자 정의 웹페이지 작성
+
+기본 Nginx 페이지 대신 Day 14 실습용 웹페이지를 작성했다.
+
+웹페이지 파일은 프로젝트 저장소의 다음 경로에도 기록했다.
+
+```text
+day14/index.html
+```
+
+EC2에서는 Nginx가 읽을 수 있도록 웹 루트 디렉터리에 HTML 파일을 배치했다.
+
+```bash
+sudo nano /var/www/html/index.html
+```
+
+웹페이지에는 다음과 같은 실습 정보를 포함했다.
+
+```html
+<h1>Home IDC Lab - Day 14</h1>
+<p>AWS EC2 Ubuntu Nginx Web Server</p>
+<p>CloudWatch Monitoring Lab</p>
+```
+
+편집을 완료한 후 저장하고 종료했다.
+
+```text
+Ctrl + O
+Enter
+Ctrl + X
+```
+
+파일 내용을 확인했다.
+
+```bash
+cat /var/www/html/index.html
+```
+
+브라우저에서 EC2 퍼블릭 IP를 새로고침하여 사용자 정의 페이지가 정상적으로 표시되는 것을 확인했다.
+
+정적 HTML 파일을 변경하는 작업은 Nginx 설정 변경이 아니므로 일반적으로 서비스를 재시작하지 않아도 바로 반영된다.
+
+---
+
+## 15. curl을 이용한 로컬 웹 응답 확인
+
+EC2 서버 내부에서도 Nginx 응답을 확인했다.
+
+```bash
+curl http://localhost
+```
+
+또는 다음 명령어를 사용할 수 있다.
+
+```bash
+curl http://127.0.0.1
+```
+
+명령어의 의미는 다음과 같다.
+
+- `curl`: HTTP 요청을 보내고 응답 내용을 출력
+- `localhost`: 현재 EC2 서버 자신
+- `127.0.0.1`: 현재 서버를 가리키는 루프백 주소
+
+HTML 내용이 출력되면 Nginx가 서버 내부에서 정상적으로 응답하고 있다는 의미다.
+
+외부 브라우저 접속과 내부 `curl` 결과를 함께 확인하면 문제 발생 위치를 구분하기 쉽다.
+
+```text
+curl 성공 + 브라우저 실패
+→ 보안 그룹 또는 네트워크 문제 가능성
+
+curl 실패 + 브라우저 실패
+→ Nginx 서비스 또는 웹 파일 문제 가능성
+```
+
+---
+
+## 16. Nginx 서비스와 포트 확인
+
+Nginx가 실제로 80번 포트를 사용하고 있는지 확인했다.
+
+```bash
+sudo ss -tulpn | grep :80
+```
+
+명령어의 의미는 다음과 같다.
+
+- `ss`: 네트워크 소켓 상태 확인
+- `-t`: TCP 소켓 표시
+- `-u`: UDP 소켓 표시
+- `-l`: LISTEN 상태 표시
+- `-p`: 사용 중인 프로세스 표시
+- `-n`: 포트 번호를 숫자로 표시
+- `grep :80`: 80번 포트가 포함된 내용만 출력
+
+정상적으로 실행 중이면 80번 포트가 `LISTEN` 상태로 표시된다.
+
+```text
+LISTEN ... 0.0.0.0:80
+```
+
+이는 Nginx가 외부에서 들어오는 HTTP 요청을 받을 준비가 되어 있다는 의미다.
+
+---
+
+## 17. CloudWatch EC2 지표 확인
+
+AWS Management Console에서 CloudWatch 서비스로 이동했다.
+
+다음 경로에서 EC2 인스턴스의 지표를 확인했다.
+
+```text
+CloudWatch
+→ Metrics
+→ All metrics
+→ EC2
+→ Per-Instance Metrics
+```
+
+모니터링할 EC2 인스턴스를 선택하고 다음 지표를 확인했다.
+
+```text
+CPUUtilization
+```
+
+`CPUUtilization`은 EC2 인스턴스의 CPU 사용률을 백분율로 나타내는 지표다.
+
+```text
+CPUUtilization 0%
+→ CPU가 거의 사용되지 않는 상태
+
+CPUUtilization 50%
+→ CPU 처리 용량의 절반 정도 사용
+
+CPUUtilization 100%
+→ CPU 자원이 최대 수준으로 사용되는 상태
+```
+
+CloudWatch는 EC2에서 생성되는 모니터링 데이터를 수집하고 그래프로 표시한다.
+
+---
+
+## 18. CloudWatch 경보 생성
+
+EC2의 CPU 사용률이 지정한 임계값을 넘으면 경보가 발생하도록 CloudWatch Alarm을 생성했다.
+
+모니터링 대상으로 다음 항목을 선택했다.
+
+```text
+Namespace: AWS/EC2
+Metric name: CPUUtilization
+Dimension: InstanceId
+Statistic: Average
+```
+
+실습에서는 경보 동작을 빠르게 확인하기 위해 CPU 사용률 임계값을 낮게 설정했다.
+
+```text
+경보 조건: CPUUtilization이 1%보다 큰 경우
+```
+
+경보 구조는 다음과 같다.
+
+```text
+CPUUtilization 데이터 수집
+           ↓
+설정한 임계값과 비교
+           ↓
+1% 초과 여부 확인
+           ↓
+경보 상태 변경
+```
+
+CloudWatch 경보는 다음과 같은 상태를 가질 수 있다.
+
+| 경보 상태 | 의미 |
+|---|---|
+| OK | 지표가 정상 범위에 있음 |
+| ALARM | 설정한 임계값을 초과함 |
+| INSUFFICIENT_DATA | 판단할 데이터가 충분하지 않음 |
+
+경보를 처음 생성하면 데이터가 아직 수집되지 않아 `INSUFFICIENT_DATA` 상태가 표시될 수 있다.
+
+일정 시간이 지나 지표가 수집되면 `OK` 또는 `ALARM` 상태로 변경된다.
+
+---
+
+## 19. Amazon SNS 주제 생성
+
+CloudWatch 경보 알림을 이메일로 전달하기 위해 Amazon SNS 주제를 생성했다.
+
+SNS는 다음 구조로 동작한다.
+
+```text
+CloudWatch Alarm
+        ↓
+SNS Topic
+        ↓
+SNS Subscription
+        ↓
+이메일
+```
+
+SNS 주제는 여러 알림 발행자와 구독자를 연결하는 통신 채널 역할을 한다.
+
+CloudWatch는 알림을 SNS 주제로 발행하고, SNS는 해당 주제를 구독한 이메일 주소로 메시지를 전달한다.
+
+주제를 생성한 후 이메일 구독을 추가했다.
+
+```text
+Protocol: Email
+Endpoint: 알림을 받을 이메일 주소
+```
+
+---
+
+## 20. SNS 이메일 구독 승인
+
+SNS 이메일 구독을 생성하면 AWS에서 확인 메일을 전송한다.
+
+이메일에 포함된 다음 링크를 눌러 구독을 승인했다.
+
+```text
+Confirm subscription
+```
+
+승인 전 구독 상태는 다음과 같이 표시된다.
+
+```text
+Pending confirmation
+```
+
+승인 후에는 다음과 같이 변경된다.
+
+```text
+Confirmed
+```
+
+이메일 구독을 승인하지 않으면 CloudWatch 경보가 발생해도 알림을 받을 수 없다.
+
+따라서 CloudWatch 경보 테스트 전에 SNS 구독 상태가 `Confirmed`인지 확인해야 한다.
+
+---
+
+## 21. CloudWatch와 SNS 연결
+
+CloudWatch 경보가 `ALARM` 상태로 변경되면 생성한 SNS 주제로 알림을 전송하도록 설정했다.
+
+```text
+CloudWatch Alarm
+        ↓
+Alarm state trigger
+        ↓
+SNS Topic
+        ↓
+Confirmed email subscription
+        ↓
+이메일 수신
+```
+
+경보 설정에서 다음 동작을 지정했다.
+
+```text
+Whenever this alarm state is ALARM
+→ Send a notification to the SNS topic
+```
+
+이를 통해 EC2 CPU 사용률 이상 상황을 사용자가 AWS 콘솔을 계속 확인하지 않아도 이메일로 전달받을 수 있다.
+
+---
+
+## 22. CPU 부하 발생 전 상태 확인
+
+CPU 부하를 발생시키기 전에 EC2의 현재 상태를 확인했다.
+
+```bash
+top
+```
+
+`top` 명령어를 사용하면 다음 정보를 실시간으로 확인할 수 있다.
+
+- CPU 사용률
+- 메모리 사용률
+- 실행 중인 프로세스
+- 시스템 부하
+- 프로세스별 자원 사용량
+
+`top` 화면에서 나오기 위해 다음 키를 눌렀다.
+
+```text
+q
+```
+
+추가로 현재 시스템 부하를 확인했다.
+
+```bash
+uptime
+```
+
+출력되는 `load average` 값은 일정 시간 동안 시스템에서 처리 중이거나 대기 중인 작업량을 나타낸다.
+
+---
+
+## 23. EC2 CPU 부하 테스트
+
+CloudWatch 경보가 정상적으로 동작하는지 확인하기 위해 EC2에 CPU 부하를 발생시켰다.
+
+CPU 부하를 발생시키면 다음 흐름으로 경보가 동작한다.
+
+```text
+EC2 CPU 부하 발생
+        ↓
+CPUUtilization 상승
+        ↓
+CloudWatch 지표 수집
+        ↓
+1% 임계값 초과
+        ↓
+CloudWatch ALARM
+        ↓
+SNS 이메일 발송
+```
+
+CPU 부하가 발생한 상태에서 다음 명령어로 CPU 사용률을 확인했다.
+
+```bash
+top
+```
+
+CPU를 사용하는 프로세스의 사용률이 증가하는 것을 확인했다.
+
+CloudWatch 지표는 실시간 터미널 출력과 약간의 시간 차이가 있을 수 있으므로 경보 상태가 변경될 때까지 잠시 기다렸다.
+
+---
+
+## 24. CloudWatch 경보 상태 확인
+
+CPU 부하를 발생시킨 후 CloudWatch Alarm 화면에서 경보 상태를 확인했다.
+
+초기 상태는 다음과 같았다.
+
+```text
+OK
+```
+
+CPU 사용률이 설정한 1% 임계값을 초과한 후 다음 상태로 변경됐다.
+
+```text
+ALARM
+```
+
+경보 그래프에서도 CPU 사용률 지표가 임계값 선을 초과한 것을 확인했다.
+
+```text
+CPU 사용률 그래프
+        ↑
+        │      지표 상승
+1% ─────┼──────────────── 임계값
+        │
+        └──────────────── 시간
+```
+
+이를 통해 CloudWatch가 EC2 CPU 사용률을 정상적으로 수집하고 경보 조건을 평가한다는 것을 확인했다.
+
+---
+
+## 25. SNS 이메일 알림 확인
+
+CloudWatch 경보가 `ALARM` 상태로 변경된 후 SNS에 등록한 이메일 주소로 경보 알림이 도착했다.
+
+이메일에는 다음과 같은 정보가 포함됐다.
+
+- CloudWatch 경보 이름
+- 경보가 발생한 리전
+- 이전 경보 상태
+- 변경된 경보 상태
+- 상태 변경 사유
+- CPUUtilization 지표 정보
+- 경보 임계값
+- EC2 인스턴스 식별 정보
+
+이메일을 통해 CloudWatch 콘솔에 접속하지 않고도 EC2에 이상 징후가 발생한 사실을 확인할 수 있었다.
+
+이번 테스트를 통해 다음 연결이 모두 정상적으로 동작함을 확인했다.
+
+```text
+EC2
+→ CloudWatch Metric
+→ CloudWatch Alarm
+→ SNS Topic
+→ Email Subscription
+→ 이메일 알림
+```
+
+---
+
+## 26. CPU 부하 종료
+
+경보 테스트가 완료된 후 CPU 부하를 발생시키던 프로세스를 종료했다.
+
+부하 프로세스가 종료됐는지 확인했다.
+
+```bash
+top
+```
+
+CPU 사용률이 다시 낮아지는 것을 확인했다.
+
+CloudWatch가 낮아진 CPU 사용률을 수집한 후 경보 상태도 다시 정상 상태로 변경될 수 있다.
+
+```text
+ALARM
+   ↓
+CPU 사용률 감소
+   ↓
+CloudWatch 지표 갱신
+   ↓
+OK
+```
+
+CloudWatch 지표와 경보 상태 변경에는 데이터 수집 주기 때문에 약간의 시간이 필요할 수 있다.
+
+---
+
+## 27. Nginx 로그 확인
+
+웹 브라우저에서 EC2 웹페이지에 접속한 후 Nginx 접속 로그를 확인했다.
+
+```bash
+sudo tail -n 20 /var/log/nginx/access.log
+```
+
+명령어의 의미는 다음과 같다.
+
+- `tail`: 파일의 마지막 부분 확인
+- `-n 20`: 마지막 20줄 출력
+- `/var/log/nginx/access.log`: Nginx 접속 로그
+
+웹페이지 접속 시 다음과 같은 정보가 기록된다.
+
+- 접속한 클라이언트 IP
+- 요청 시간
+- HTTP 요청 방식
+- 요청한 경로
+- HTTP 응답 상태 코드
+- 전송된 데이터 크기
+- 웹 브라우저 정보
+
+실시간으로 로그를 확인할 때는 다음 명령어를 사용할 수 있다.
+
+```bash
+sudo tail -f /var/log/nginx/access.log
+```
+
+`-f` 옵션은 새로운 로그가 생성될 때마다 화면에 계속 출력한다.
+
+실시간 로그 확인을 종료하기 위해 다음 키를 눌렀다.
+
+```text
+Ctrl + C
+```
+
+---
+
+## 28. Nginx 오류 로그 확인
+
+Nginx에서 발생한 오류를 확인하기 위해 오류 로그를 확인했다.
+
+```bash
+sudo tail -n 20 /var/log/nginx/error.log
+```
+
+오류 로그에는 다음과 같은 문제가 기록될 수 있다.
+
+- 설정 파일 문법 오류
+- 파일 접근 권한 문제
+- 존재하지 않는 파일 요청
+- 포트 사용 충돌
+- Nginx 프로세스 오류
+
+Nginx 설정 파일의 문법을 검사할 때는 다음 명령어를 사용할 수 있다.
+
+```bash
+sudo nginx -t
+```
+
+정상적인 경우 다음과 비슷한 결과가 나타난다.
+
+```text
+syntax is ok
+test is successful
+```
+
+설정을 변경한 후 문법 검사를 먼저 수행하면 잘못된 설정으로 인해 Nginx가 중단되는 문제를 예방할 수 있다.
+
+---
+
+## 29. 프로젝트 실습 파일 저장
+
+Day 14 실습 내용을 GitHub에 기록하기 위해 프로젝트에 다음 디렉터리를 생성했다.
+
+```text
+day14/
+```
+
+Day 14 디렉터리에는 다음 파일을 저장했다.
+
+```text
+day14/index.html
+day14/cloudwatch-alarm.md
+```
+
+각 파일의 역할은 다음과 같다.
+
+| 파일 | 내용 |
+|---|---|
+| `day14/index.html` | EC2 Nginx에 배포한 실습용 웹페이지 |
+| `day14/cloudwatch-alarm.md` | CloudWatch 및 SNS 경보 구성 기록 |
+
+README에서는 다음 링크를 통해 실습 파일을 확인할 수 있다.
+
+- [Day 14 Nginx 웹페이지](day14/index.html)
+- [Day 14 CloudWatch 경보 구성 기록](day14/cloudwatch-alarm.md)
+
+---
+
+## 30. 문제 해결 기록
+
+### 문제 1: EC2 SSH 접속 실패
+
+EC2 인스턴스에 SSH 접속을 시도했지만 연결되지 않는 문제가 발생할 수 있다.
+
+```text
+Connection timed out
+```
+
+### 확인 항목
+
+- EC2 인스턴스가 `Running` 상태인지 확인
+- 상태 검사가 `2/2 checks passed`인지 확인
+- 올바른 퍼블릭 IP를 사용했는지 확인
+- 보안 그룹에서 TCP 22번 포트를 허용했는지 확인
+- 올바른 `.pem` 키 파일을 사용했는지 확인
+- Ubuntu 인스턴스 사용자 이름이 `ubuntu`인지 확인
+
+SSH 접속 형식은 다음과 같다.
+
+```bash
+ssh -i <키파일.pem> ubuntu@<EC2_PUBLIC_IP>
+```
+
+---
+
+### 문제 2: 웹페이지 접속 실패
+
+Nginx를 설치했지만 브라우저에서 EC2 퍼블릭 IP에 접속되지 않을 수 있다.
+
+### 확인 항목
+
+먼저 Nginx 상태를 확인한다.
+
+```bash
+sudo systemctl status nginx
+```
+
+Nginx가 실행 중이 아니면 다음 명령어로 시작한다.
+
+```bash
+sudo systemctl start nginx
+```
+
+EC2 내부에서 웹 서버 응답을 확인한다.
+
+```bash
+curl http://localhost
+```
+
+80번 포트 사용 여부를 확인한다.
+
+```bash
+sudo ss -tulpn | grep :80
+```
+
+EC2 내부에서는 접속되지만 외부 브라우저에서 접속되지 않는다면 보안 그룹의 HTTP 80번 포트 규칙을 확인해야 한다.
+
+---
+
+### 문제 3: CloudWatch 경보가 바로 동작하지 않음
+
+CPU 부하를 발생시켰지만 CloudWatch 경보가 즉시 `ALARM` 상태로 변경되지 않을 수 있다.
+
+### 원인
+
+CloudWatch 지표는 터미널의 `top` 명령처럼 매초 즉시 반영되는 방식이 아니다.
+
+EC2 지표 수집, 경보 평가, SNS 전달 과정에 시간이 필요할 수 있다.
+
+```text
+CPU 부하 발생
+      ↓
+지표 수집 대기
+      ↓
+CloudWatch 그래프 반영
+      ↓
+경보 조건 평가
+      ↓
+ALARM 상태 변경
+```
+
+### 해결
+
+- CPU 부하 프로세스가 실제로 실행 중인지 확인
+- `top`으로 CPU 사용률 확인
+- CloudWatch에서 올바른 EC2 인스턴스를 선택했는지 확인
+- 선택한 지표가 `CPUUtilization`인지 확인
+- 경보 임계값이 1%로 설정됐는지 확인
+- 경보 평가가 완료될 때까지 기다린 후 새로고침
+
+---
+
+### 문제 4: SNS 이메일이 도착하지 않음
+
+CloudWatch 경보는 발생했지만 이메일이 도착하지 않을 수 있다.
+
+### 확인 항목
+
+SNS 구독 상태를 확인한다.
+
+```text
+Pending confirmation
+```
+
+위 상태라면 이메일에서 구독 확인 링크를 누르지 않은 것이다.
+
+정상적인 구독 상태는 다음과 같다.
+
+```text
+Confirmed
+```
+
+추가로 다음 항목을 확인한다.
+
+- 스팸 메일함 확인
+- SNS 주제에 올바른 이메일 주소가 등록됐는지 확인
+- CloudWatch 경보가 올바른 SNS 주제와 연결됐는지 확인
+- 경보 상태가 실제로 `ALARM`으로 변경됐는지 확인
+
+---
+
+### 문제 5: 경보 테스트 후에도 ALARM 상태 유지
+
+CPU 부하를 중지했지만 CloudWatch 경보가 바로 `OK` 상태로 돌아오지 않을 수 있다.
+
+### 원인
+
+CloudWatch가 새로운 CPU 사용률 데이터를 수집하고 경보 상태를 다시 평가하는 데 시간이 필요하기 때문이다.
+
+### 해결
+
+- CPU 부하 프로세스가 종료됐는지 확인
+- `top`으로 CPU 사용률이 낮아졌는지 확인
+- 새로운 CloudWatch 데이터가 수집될 때까지 대기
+- CloudWatch 경보 화면 새로고침
+
+---
+
+## 31. AWS 리소스 정리 필요성
+
+AWS 실습 리소스를 그대로 두면 사용하지 않는 동안에도 비용이 발생할 수 있다.
+
+특히 다음 리소스는 실습 완료 후 반드시 확인해야 한다.
+
+- EC2 인스턴스
+- EBS 볼륨
+- Elastic IP
+- NAT Gateway
+- CloudWatch Alarm
+- SNS Topic
+- SNS Subscription
+- EC2 Key Pair
+- 실습용 Security Group
+
+리소스 삭제 흐름은 다음과 같다.
+
+```text
+실습 완료
+    ↓
+EC2 종료
+    ↓
+EBS 볼륨 확인
+    ↓
+CloudWatch 경보 삭제
+    ↓
+SNS 주제 및 구독 삭제
+    ↓
+키 페어 삭제
+    ↓
+보안 그룹 삭제
+    ↓
+추가 과금 리소스 확인
+```
+
+---
+
+## 32. EC2 인스턴스 종료
+
+실습 완료 후 EC2 인스턴스를 종료했다.
+
+```text
+EC2
+→ Instances
+→ 실습 인스턴스 선택
+→ Instance state
+→ Terminate instance
+```
+
+인스턴스 상태가 다음과 같이 변경되는 것을 확인했다.
+
+```text
+Shutting-down
+        ↓
+Terminated
+```
+
+`Stop instance`는 인스턴스를 일시적으로 중지하는 기능이며, 연결된 EBS 볼륨 등의 비용이 계속 발생할 수 있다.
+
+실습 리소스를 완전히 제거할 때는 `Terminate instance`를 사용해야 한다.
+
+---
+
+## 33. EBS 볼륨 확인
+
+EC2 인스턴스 종료 후 연결된 EBS 볼륨이 함께 삭제됐는지 확인했다.
+
+```text
+EC2
+→ Elastic Block Store
+→ Volumes
+```
+
+실습용 볼륨이 남아 있지 않은 것을 확인했다.
+
+EC2 인스턴스를 삭제했더라도 EBS 설정에 따라 볼륨이 남을 수 있으므로 별도로 확인해야 한다.
+
+사용하지 않는 EBS 볼륨이 남아 있으면 스토리지 비용이 발생할 수 있다.
+
+---
+
+## 34. CloudWatch 경보 삭제
+
+실습에 사용한 CloudWatch 경보를 삭제했다.
+
+```text
+CloudWatch
+→ Alarms
+→ All alarms
+→ 실습 경보 선택
+→ Actions
+→ Delete
+```
+
+경보를 삭제하면 더 이상 EC2 CPU 사용률을 평가하거나 SNS로 알림을 전송하지 않는다.
+
+CloudWatch 경보 목록에서 실습용 경보가 사라진 것을 확인했다.
+
+---
+
+## 35. SNS 주제와 구독 삭제
+
+이메일 알림에 사용한 SNS 주제를 삭제했다.
+
+```text
+Amazon SNS
+→ Topics
+→ 실습용 Topic 선택
+→ Delete
+```
+
+SNS 주제를 삭제하면 연결된 구독도 더 이상 사용할 수 없다.
+
+다음 항목이 남아 있지 않은지 확인했다.
+
+```text
+실습용 SNS Topic
+실습용 Email Subscription
+```
+
+SNS 주제와 구독을 정리함으로써 실습에 사용한 알림 구성을 제거했다.
+
+---
+
+## 36. EC2 키 페어 삭제
+
+AWS 콘솔에서 실습에 사용한 EC2 키 페어를 삭제했다.
+
+```text
+EC2
+→ Network & Security
+→ Key Pairs
+→ 실습용 키 페어 선택
+→ Delete
+```
+
+키 페어를 삭제한 후 로컬 컴퓨터에 내려받았던 `.pem` 파일도 삭제했다.
+
+개인 키 파일은 GitHub 저장소에 업로드하지 않았으며, 실습이 끝난 후 안전하게 제거했다.
+
+---
+
+## 37. 보안 그룹 삭제
+
+실습에 사용한 보안 그룹을 삭제했다.
+
+```text
+EC2
+→ Network & Security
+→ Security Groups
+→ 실습용 보안 그룹 선택
+→ Delete security groups
+```
+
+보안 그룹이 EC2 또는 다른 네트워크 인터페이스에 연결되어 있으면 삭제되지 않을 수 있다.
+
+EC2 인스턴스가 완전히 종료된 후 연결이 해제된 것을 확인하고 삭제했다.
+
+AWS 계정에서 기본으로 생성되는 `default` 보안 그룹은 삭제하지 않았다.
+
+---
+
+## 38. Elastic IP와 NAT Gateway 확인
+
+추가 비용이 발생할 수 있는 네트워크 리소스도 확인했다.
+
+Elastic IP 확인 경로는 다음과 같다.
+
+```text
+EC2
+→ Network & Security
+→ Elastic IP addresses
+```
+
+실습용 Elastic IP가 존재하지 않는 것을 확인했다.
+
+NAT Gateway 확인 경로는 다음과 같다.
+
+```text
+VPC
+→ NAT Gateways
+```
+
+실습용 NAT Gateway가 존재하지 않는 것을 확인했다.
+
+Elastic IP와 NAT Gateway는 사용하지 않아도 설정 상태에 따라 비용이 발생할 수 있으므로 실습 후 확인이 중요하다.
+
+---
+
+## 39. 최종 리소스 정리 결과
+
+실습에 사용한 AWS 리소스를 최종적으로 점검했다.
+
+```text
+EC2 인스턴스: 종료 완료
+EBS 볼륨: 남아 있지 않음
+CloudWatch Alarm: 삭제 완료
+SNS Topic: 삭제 완료
+SNS Subscription: 삭제 완료
+EC2 Key Pair: 삭제 완료
+로컬 PEM 파일: 삭제 완료
+실습용 Security Group: 삭제 완료
+Elastic IP: 없음
+NAT Gateway: 없음
+기본 VPC: 유지
+기본 Security Group: 유지
+```
+
+AWS 기본 리소스는 유지하고 실습을 위해 새로 생성한 리소스만 삭제했다.
+
+---
+
+## 40. GitHub 업로드
+
+Day 14 실습 파일을 Git 저장소에 추가했다.
+
+```bash
+git add day14/index.html day14/cloudwatch-alarm.md
+```
+
+커밋을 생성했다.
+
+```bash
+git commit -m "feat: add Day 14 EC2 monitoring artifacts"
+```
+
+GitHub 원격 저장소로 업로드했다.
+
+```bash
+git push origin main
+```
+
+정상적으로 업로드된 후 다음 명령어로 저장소 상태를 확인했다.
+
+```bash
+git status
+```
+
+확인 결과:
+
+```text
+On branch main
+Your branch is up to date with 'origin/main'.
+
+nothing to commit, working tree clean
+```
+
+로컬 `main` 브랜치와 GitHub의 `origin/main` 브랜치가 정상적으로 동기화된 것을 확인했다.
+
+---
+
+## 41. SSH 방식의 GitHub 인증 설정
+
+기존 HTTPS 인증 대신 SSH 키를 이용해 GitHub에 접속하도록 변경했다.
+
+새로운 ED25519 SSH 키를 생성했다.
+
+```bash
+ssh-keygen -t ed25519 -C "home-idc-lab-ubuntu" -f ~/.ssh/id_ed25519_github
+```
+
+생성된 키를 SSH 에이전트에 등록했다.
+
+```bash
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519_github
+```
+
+공개 키를 확인했다.
+
+```bash
+cat ~/.ssh/id_ed25519_github.pub
+```
+
+출력된 공개 키를 GitHub의 다음 경로에 등록했다.
+
+```text
+GitHub
+→ Settings
+→ SSH and GPG keys
+→ New SSH key
+```
+
+GitHub SSH 인증을 테스트했다.
+
+```bash
+ssh -T git@github.com
+```
+
+인증 성공 메시지는 다음과 같다.
+
+```text
+Hi dbtjddn10-oss! You've successfully authenticated,
+but GitHub does not provide shell access.
+```
+
+Git 원격 저장소 주소를 SSH 방식으로 변경했다.
+
+```bash
+git remote set-url origin git@github.com:dbtjddn10-oss/home-idc-lab.git
+```
+
+변경된 원격 저장소 주소를 확인했다.
+
+```bash
+git remote -v
+```
+
+이후 별도의 GitHub 비밀번호나 Personal Access Token 없이 SSH 방식으로 푸시할 수 있게 됐다.
+
+---
+
+## 42. 실습 결과
+
+이번 Day 14 실습을 통해 다음 작업을 완료했다.
+
+- AWS EC2 Ubuntu 인스턴스 생성
+- EC2 키 페어를 이용한 SSH 접속
+- 보안 그룹 SSH 22번 포트 설정
+- 보안 그룹 HTTP 80번 포트 설정
+- Ubuntu 패키지 목록 업데이트
+- Nginx 웹 서버 설치
+- Nginx 서비스 실행 및 자동 시작 설정
+- EC2 퍼블릭 IP를 이용한 외부 웹 접속
+- 사용자 정의 HTML 웹페이지 배포
+- Nginx 접속 로그와 오류 로그 확인
+- CloudWatch EC2 CPUUtilization 지표 확인
+- CPU 사용률 1% 초과 조건의 경보 생성
+- Amazon SNS 주제 생성
+- SNS 이메일 구독 승인
+- CloudWatch Alarm과 SNS 연결
+- EC2 CPU 부하 테스트
+- CloudWatch 경보의 `ALARM` 상태 전환 확인
+- SNS 이메일 경보 수신 확인
+- CPU 부하 종료 후 지표 감소 확인
+- 실습에 사용한 AWS 리소스 정리
+- Day 14 실습 파일 GitHub 업로드
+- GitHub SSH 인증 구성
+
+---
+
+## 43. 배운 점
+
+이번 실습을 통해 AWS EC2 인스턴스를 생성하고 Linux 웹 서버를 클라우드 환경에서 운영하는 기본 과정을 익혔다.
+
+기존 VirtualBox 환경에서는 Windows 호스트와 Ubuntu 가상 머신 사이의 포트 포워딩을 직접 설정했지만, AWS에서는 퍼블릭 IP와 보안 그룹을 이용해 인터넷 접근을 제어한다는 차이를 이해했다.
+
+또한 보안 그룹에서 허용된 포트만 EC2에 접근할 수 있으므로 서버 서비스가 정상적으로 실행 중이더라도 보안 그룹 규칙이 없으면 외부에서 접속할 수 없다는 점을 확인했다.
+
+CloudWatch를 이용하면 서버에 직접 접속하지 않아도 CPU 사용률과 같은 지표를 확인할 수 있으며, 임계값 기반 경보를 설정할 수 있다는 점을 배웠다.
+
+Amazon SNS를 CloudWatch와 연결하면 서버의 이상 상황을 이메일로 전달할 수 있어 운영자가 AWS 콘솔을 계속 확인하지 않아도 장애 징후를 빠르게 확인할 수 있다.
+
+특히 다음과 같은 기본 모니터링 흐름을 직접 구성해 봤다는 점이 중요하다.
+
+```text
+Metric
+→ Monitoring
+→ Threshold
+→ Alarm
+→ Notification
+→ Operator response
+```
+
+마지막으로 클라우드 실습에서는 서비스를 생성하는 것뿐만 아니라 사용이 끝난 리소스를 정확히 삭제하는 것도 중요한 운영 작업이라는 점을 익혔다.
+
+EC2만 종료하는 것으로 끝내지 않고 EBS, Elastic IP, NAT Gateway, CloudWatch Alarm, SNS, 키 페어와 보안 그룹까지 확인해야 불필요한 비용과 보안 위험을 예방할 수 있다.
+
+---
+
+## 44. 실습 자료
+
+- [Day 14 Nginx 웹페이지](day14/index.html)
+- [Day 14 CloudWatch 경보 구성 기록](day14/cloudwatch-alarm.md)
+
+---
+
+## 45. Day 14 최종 정리
+
+이번 실습에서는 로컬 가상화 환경을 넘어 실제 AWS 클라우드에 Ubuntu 웹 서버를 구축했다.
+
+EC2에 Nginx를 설치하고 외부 웹 접속을 구성했으며, CloudWatch와 SNS를 이용해 다음과 같은 기본적인 서버 운영 환경을 완성했다.
+
+```text
+웹 서비스 구축
+       +
+서버 자원 모니터링
+       +
+임계값 기반 장애 감지
+       +
+이메일 알림
+       +
+리소스 정리
+```
+
+이를 통해 서버를 단순히 실행하는 것을 넘어 상태를 관찰하고, 이상 상황을 감지하고, 운영자에게 알리고, 실습 후 자원을 정리하는 전체 운영 흐름을 경험했다.
+
+---
+
+
+
+
 ---
 
 # Day 13 - Nginx 백업 S3 자동 업로드 구축
