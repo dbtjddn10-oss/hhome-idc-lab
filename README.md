@@ -1,5 +1,508 @@
 ---
 
+# Day 13 - Nginx 백업 S3 자동 업로드 구축
+
+## 1. 실습 목표
+
+이번 실습에서는 기존 Nginx 로컬 백업 스크립트와 AWS CLI를 연결하여 다음 작업을 자동화했다.
+
+- Nginx HTML 데이터 백업 생성
+- SHA-256 체크섬 생성
+- 최신 백업 파일 자동 탐색
+- AWS S3 자동 업로드
+- 중복 실행 방지
+- 실행 결과 로그 기록
+- Cron을 이용한 정기 실행
+- S3 업로드 결과 검증
+
+---
+
+## 2. 자동 백업 구조
+
+```text
+Nginx HTML
+    ↓
+backup-nginx.sh
+    ↓
+로컬 tar.gz 백업 및 SHA-256 생성
+    ↓
+upload-s3.sh
+    ↓
+AWS CLI
+    ↓
+Amazon S3 nginx-backups/
+```
+
+사용한 주요 경로는 다음과 같다.
+
+| 구분 | 경로 |
+|---|---|
+| Nginx 데이터 | `/home/sungwoo/docker-nginx/html` |
+| 로컬 백업 디렉터리 | `/home/sungwoo/home-idc-lab/backups` |
+| 기존 백업 스크립트 | `/home/sungwoo/home-idc-lab/scripts/backup-nginx.sh` |
+| S3 업로드 스크립트 | `/home/sungwoo/home-idc-lab/scripts/upload-s3.sh` |
+| S3 업로드 로그 | `/home/sungwoo/home-idc-lab/logs/s3-upload.log` |
+| Cron 설정 파일 | `/home/sungwoo/home-idc-lab/cron/home-idc.cron` |
+| AWS CLI 프로필 | `home-idc-s3-backup` |
+| S3 버킷 | `home-idc-backup-lab-20260723-k7m4` |
+| S3 저장 경로 | `nginx-backups/` |
+
+---
+
+## 3. S3 자동 업로드 스크립트 작성
+
+다음 경로에 자동 업로드 스크립트를 작성했다.
+
+```text
+/home/sungwoo/home-idc-lab/scripts/upload-s3.sh
+```
+
+스크립트 내용:
+
+```bash
+#!/bin/bash
+
+set -euo pipefail
+
+export HOME="/home/sungwoo"
+export PATH="/usr/local/bin:/usr/bin:/bin"
+
+BACKUP_SCRIPT="/home/sungwoo/home-idc-lab/scripts/backup-nginx.sh"
+BACKUP_DIR="/home/sungwoo/home-idc-lab/backups"
+BUCKET="s3://home-idc-backup-lab-20260723-k7m4"
+S3_PREFIX="nginx-backups"
+PROFILE="home-idc-s3-backup"
+LOCK_FILE="/tmp/home-idc-s3-upload.lock"
+
+exec 9>"$LOCK_FILE"
+
+if ! flock -n 9; then
+  echo "FAIL: Another S3 upload job is already running" >&2
+  exit 1
+fi
+
+echo "===== Home IDC S3 Backup Upload ====="
+echo "Time: $(date '+%Y-%m-%d %H:%M:%S')"
+echo
+
+"$BACKUP_SCRIPT"
+
+LATEST_BACKUP="$(
+  find "$BACKUP_DIR" -maxdepth 1 -type f \
+    -name 'nginx-html-*.tar.gz' \
+    -printf '%T@ %p\n' |
+  sort -nr |
+  head -n 1 |
+  cut -d' ' -f2-
+)"
+
+if [ -z "$LATEST_BACKUP" ] || [ ! -f "$LATEST_BACKUP" ]; then
+  echo "FAIL: Backup file was not found" >&2
+  exit 1
+fi
+
+CHECKSUM_FILE="${LATEST_BACKUP}.sha256"
+BACKUP_NAME="$(basename "$LATEST_BACKUP")"
+
+echo "Uploading: $BACKUP_NAME"
+
+/usr/local/bin/aws s3 cp \
+  "$LATEST_BACKUP" \
+  "$BUCKET/$S3_PREFIX/$BACKUP_NAME" \
+  --profile "$PROFILE" \
+  --only-show-errors
+
+if [ -f "$CHECKSUM_FILE" ]; then
+  /usr/local/bin/aws s3 cp \
+    "$CHECKSUM_FILE" \
+    "$BUCKET/$S3_PREFIX/$(basename "$CHECKSUM_FILE")" \
+    --profile "$PROFILE" \
+    --only-show-errors
+else
+  echo "WARN: Checksum file was not found: $CHECKSUM_FILE" >&2
+fi
+
+echo
+echo "S3 upload completed: $BUCKET/$S3_PREFIX/$BACKUP_NAME"
+```
+
+---
+
+## 4. 스크립트 주요 기능
+
+### 오류 발생 시 즉시 종료
+
+```bash
+set -euo pipefail
+```
+
+명령 실패, 정의되지 않은 변수 사용 또는 파이프라인 오류가 발생하면 스크립트를 즉시 종료한다.
+
+### Cron 실행 환경 설정
+
+```bash
+export HOME="/home/sungwoo"
+export PATH="/usr/local/bin:/usr/bin:/bin"
+```
+
+Cron은 일반 터미널보다 제한된 환경 변수로 실행되므로 AWS CLI와 사용자 프로필을 정상적으로 찾을 수 있도록 설정했다.
+
+### 중복 실행 방지
+
+```bash
+exec 9>"/tmp/home-idc-s3-upload.lock"
+flock -n 9
+```
+
+이전 백업 작업이 끝나기 전에 새로운 작업이 시작되는 것을 방지했다.
+
+### 최신 백업 자동 탐색
+
+```bash
+find "$BACKUP_DIR" -maxdepth 1 -type f \
+  -name 'nginx-html-*.tar.gz' \
+  -printf '%T@ %p\n' |
+sort -nr |
+head -n 1
+```
+
+백업 디렉터리에서 수정 시간이 가장 최근인 압축 파일을 자동으로 선택한다.
+
+### 백업 파일과 체크섬 업로드
+
+다음 두 파일을 S3에 함께 업로드하도록 구성했다.
+
+```text
+nginx-html-YYYYMMDD-HHMMSS.tar.gz
+nginx-html-YYYYMMDD-HHMMSS.tar.gz.sha256
+```
+
+---
+
+## 5. 실행 권한 설정
+
+스크립트에 실행 권한을 부여했다.
+
+```bash
+chmod +x /home/sungwoo/home-idc-lab/scripts/upload-s3.sh
+```
+
+---
+
+## 6. 수동 실행 테스트
+
+스크립트를 직접 실행하여 전체 백업 과정을 테스트했다.
+
+```bash
+/home/sungwoo/home-idc-lab/scripts/upload-s3.sh
+```
+
+정상 실행 결과:
+
+```text
+===== Home IDC S3 Backup Upload =====
+Time: 2026-07-23 03:55:29
+
+Backup completed: /home/sungwoo/home-idc-lab/backups/nginx-html-20260723-035529.tar.gz
+Uploading: nginx-html-20260723-035529.tar.gz
+
+S3 upload completed: s3://home-idc-backup-lab-20260723-k7m4/nginx-backups/nginx-html-20260723-035529.tar.gz
+```
+
+---
+
+## 7. AWS 요청 시간 오류 발생
+
+첫 번째 S3 업로드 시 다음 오류가 발생했다.
+
+```text
+RequestTimeTooSkewed
+The difference between the request time and the current time is too large.
+```
+
+Ubuntu VM 시간이 AWS 서버 시간보다 약 1시간 18분 느린 것이 원인이었다.
+
+AWS 요청 서명에는 요청 시간이 포함되기 때문에 시스템 시간이 크게 다르면 인증 요청이 거부된다.
+
+---
+
+## 8. VM 시간과 AWS 시간 비교
+
+Ubuntu VM의 UTC 시간과 AWS S3 서버의 HTTP 응답 시간을 비교했다.
+
+```bash
+echo "VM UTC: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" &&
+curl -sI https://s3.ap-northeast-2.amazonaws.com/ |
+grep -i '^date:'
+```
+
+오류 발생 당시 결과:
+
+```text
+VM UTC: 2026-07-23 02:35:43 UTC
+Date: Thu, 23 Jul 2026 03:53:43 GMT
+```
+
+약 1시간 18분의 차이가 있는 것을 확인했다.
+
+---
+
+## 9. Chrony 시간 동기화 복구
+
+Chrony 서비스를 재시작하고 새로운 NTP 측정을 강제로 수행했다.
+
+```bash
+sudo systemctl restart chrony &&
+sleep 5 &&
+sudo chronyc burst 4/4 &&
+sleep 10 &&
+sudo chronyc makestep
+```
+
+시간 동기화 후 다시 비교했다.
+
+```bash
+date -u
+curl -sI https://s3.ap-northeast-2.amazonaws.com/ |
+grep -i '^date:'
+```
+
+결과:
+
+```text
+Thu Jul 23 03:54:59 AM UTC 2026
+Date: Thu, 23 Jul 2026 03:54:59 GMT
+```
+
+Ubuntu VM 시간과 AWS 시간이 정확하게 일치하는 것을 확인했다.
+
+시간 동기화 후 S3 업로드 스크립트가 정상 작동했다.
+
+---
+
+## 10. S3 업로드 결과 확인
+
+AWS CLI를 이용하여 업로드된 객체를 확인했다.
+
+```bash
+aws s3 ls \
+  s3://home-idc-backup-lab-20260723-k7m4/nginx-backups/ \
+  --profile home-idc-s3-backup
+```
+
+출력 결과:
+
+```text
+2026-07-23 03:55:31        197 nginx-html-20260723-035529.tar.gz
+2026-07-23 03:55:32        100 nginx-html-20260723-035529.tar.gz.sha256
+```
+
+백업 압축 파일과 SHA-256 체크섬 파일이 모두 정상적으로 업로드됐다.
+
+---
+
+## 11. Cron 자동 실행 설정
+
+기존 로컬 백업 Cron 작업을 S3 자동 업로드 스크립트로 교체했다.
+
+최종 Cron 설정:
+
+```cron
+*/5 * * * * /home/sungwoo/home-idc-lab/scripts/health-check.sh >> /home/sungwoo/home-idc-lab/logs/cron-health-check.log 2>&1
+0 2 * * * /home/sungwoo/home-idc-lab/scripts/upload-s3.sh >> /home/sungwoo/home-idc-lab/logs/s3-upload.log 2>&1
+```
+
+현재 서버 시간대가 UTC이므로 S3 백업 작업은 매일 다음 시간에 실행된다.
+
+```text
+02:00 UTC
+11:00 KST
+```
+
+첫 번째 작업은 5분마다 서버 상태를 점검하고, 두 번째 작업은 매일 한 번 로컬 백업 생성과 S3 업로드를 수행한다.
+
+---
+
+## 12. Cron 설정 파일 저장
+
+현재 Crontab을 GitHub에 기록하기 위해 파일로 저장했다.
+
+```bash
+mkdir -p /home/sungwoo/home-idc-lab/cron
+```
+
+```bash
+crontab -l > /home/sungwoo/home-idc-lab/cron/home-idc.cron
+```
+
+저장된 파일:
+
+```text
+cron/home-idc.cron
+```
+
+---
+
+## 13. Cron 방식 로그 테스트
+
+실제 Cron에서 사용하는 것과 동일한 출력 리다이렉션 방식으로 스크립트를 실행했다.
+
+```bash
+/home/sungwoo/home-idc-lab/scripts/upload-s3.sh \
+  >> /home/sungwoo/home-idc-lab/logs/s3-upload.log \
+  2>&1
+```
+
+로그 확인:
+
+```bash
+tail -n 20 /home/sungwoo/home-idc-lab/logs/s3-upload.log
+```
+
+출력 결과:
+
+```text
+===== Home IDC S3 Backup Upload =====
+Time: 2026-07-23 04:00:21
+
+Backup completed: /home/sungwoo/home-idc-lab/backups/nginx-html-20260723-040021.tar.gz
+Uploading: nginx-html-20260723-040021.tar.gz
+
+S3 upload completed: s3://home-idc-backup-lab-20260723-k7m4/nginx-backups/nginx-html-20260723-040021.tar.gz
+```
+
+---
+
+## 14. 반복 실행 결과 확인
+
+두 번째 테스트에서 생성된 파일도 S3에 정상적으로 저장됐다.
+
+```text
+nginx-html-20260723-040021.tar.gz
+nginx-html-20260723-040021.tar.gz.sha256
+```
+
+전체 조회 결과:
+
+```text
+2026-07-23 03:55:31        197 nginx-html-20260723-035529.tar.gz
+2026-07-23 03:55:32        100 nginx-html-20260723-035529.tar.gz.sha256
+2026-07-23 04:00:23        197 nginx-html-20260723-040021.tar.gz
+2026-07-23 04:00:24        100 nginx-html-20260723-040021.tar.gz.sha256
+```
+
+---
+
+## 15. Cron 서비스 상태 확인
+
+Cron 서비스가 실행 중인지 확인했다.
+
+```bash
+systemctl is-active cron
+```
+
+결과:
+
+```text
+active
+```
+
+---
+
+## 16. 스크립트 문법 검사
+
+Bash 문법 오류가 없는지 검사했다.
+
+```bash
+bash -n /home/sungwoo/home-idc-lab/scripts/upload-s3.sh &&
+echo "Syntax OK"
+```
+
+결과:
+
+```text
+Syntax OK
+```
+
+---
+
+## 17. GitHub 업로드 파일
+
+Day 13에서 GitHub에 업로드한 파일은 다음과 같다.
+
+```text
+scripts/upload-s3.sh
+cron/home-idc.cron
+README.md
+```
+
+다음 파일은 보안과 저장소 용량 관리를 위해 업로드하지 않았다.
+
+```text
+~/.aws/credentials
+~/.aws/config
+AWS Access Key
+AWS Secret Access Key
+logs/s3-upload.log
+backups/*.tar.gz
+backups/*.sha256
+```
+
+---
+
+## 18. 최종 검증 결과
+
+| 테스트 | 결과 |
+|---|---|
+| S3 자동 업로드 스크립트 작성 | 성공 |
+| Bash 실행 권한 설정 | 성공 |
+| 로컬 백업 자동 생성 | 성공 |
+| 최신 백업 파일 탐색 | 성공 |
+| S3 압축 파일 업로드 | 성공 |
+| SHA-256 파일 업로드 | 성공 |
+| 중복 실행 방지 | 적용 |
+| VM 시간 오류 분석 | 성공 |
+| Chrony 시간 재동기화 | 성공 |
+| Cron 작업 등록 | 성공 |
+| Cron 로그 기록 | 성공 |
+| Cron 서비스 상태 | `active` |
+| Bash 문법 검사 | `Syntax OK` |
+
+---
+
+## 19. 이번 실습에서 익힌 내용
+
+- 기존 백업 스크립트와 AWS CLI 연결
+- Bash 함수가 아닌 독립 스크립트 간 연동
+- `set -euo pipefail`을 이용한 오류 처리
+- `flock`을 이용한 중복 작업 방지
+- `find`, `sort`, `head`를 이용한 최신 파일 탐색
+- AWS CLI 프로필을 이용한 S3 자동 업로드
+- Cron의 제한된 실행 환경
+- 로그 리다이렉션
+- NTP 및 Chrony 시간 동기화
+- AWS 요청 서명과 시스템 시간의 관계
+- Bash 문법 사전 검사
+- 백업 파일과 체크섬 파일을 함께 보관하는 방법
+
+---
+
+## 20. Day 13 완료 결과
+
+Nginx 웹 데이터의 로컬 백업 생성부터 AWS S3 업로드까지 전 과정을 하나의 스크립트로 자동화했다.
+
+백업 파일뿐 아니라 SHA-256 체크섬 파일도 함께 업로드하여 이후 복구 시 무결성을 검증할 수 있도록 구성했다.
+
+또한 Cron을 이용해 정기적으로 실행되도록 설정하고, 로그 기록과 중복 실행 방지를 적용했다.
+
+실습 중 발생한 AWS 요청 시간 오류를 VM과 AWS 서버의 시간을 직접 비교하여 원인을 확인하고 Chrony를 통해 해결했다.
+
+다음 단계에서는 AWS EC2, CloudWatch 및 알림 서비스를 이용해 클라우드 서버 운영과 모니터링 환경을 구성한다.
+
+
+
+---
+
 # Day 12 - AWS IAM, S3 및 AWS CLI 백업 실습
 
 ## 1. 실습 목표
