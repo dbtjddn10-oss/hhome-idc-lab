@@ -1,2 +1,0 @@
-*/5 * * * * /home/sungwoo/home-idc-lab/scripts/health-check.sh >> /home/sungwoo/home-idc-lab/logs/cron-health-check.log 2>&1
-0 2 * * * /home/sungwoo/home-idc-lab/scripts/upload-s3.sh >> /home/sungwoo/home-idc-lab/logs/s3-upload.log 2>&1
