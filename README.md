@@ -6717,3 +6717,216 @@ GitHub 공개 저장소에는 다음 정보를 올리지 않는다.
 - AWS Secret Access Key
 - 개인정보
 - 민감한 내부 IP 또는 계정 정보
+---
+
+# Day 14 - AWS EC2 웹 서버 구축 및 CloudWatch 알림 테스트
+
+## 1. 실습 목표
+
+이번 실습에서는 AWS EC2에 Ubuntu 웹 서버를 구축하고 CloudWatch와 SNS를 이용해 CPU 사용률 경보를 테스트했다.
+
+- EC2 Ubuntu 인스턴스 생성
+- SSH 키 기반 원격 접속
+- Nginx 설치 및 웹 페이지 배포
+- 보안 그룹 최소 권한 설정
+- CloudWatch CPU 경보 생성
+- SNS 이메일 알림 연동
+- CPU 부하를 이용한 장애 알림 테스트
+- 테스트 후 AWS 리소스 정리
+
+---
+
+## 2. 구성 구조
+
+사용자 브라우저
+    ↓ HTTP 80
+AWS EC2 Ubuntu
+    ↓
+Nginx 웹 서버
+
+EC2 CPUUtilization
+    ↓
+Amazon CloudWatch Alarm
+    ↓
+Amazon SNS
+    ↓
+이메일 알림
+
+---
+
+## 3. EC2 인스턴스 구성
+
+| 항목 | 설정 |
+|---|---|
+| 리전 | Asia Pacific (Seoul) |
+| 운영체제 | Ubuntu Server 26.04 LTS |
+| 인스턴스 유형 | t3.micro |
+| 스토리지 | 8 GiB gp3 |
+| 웹 서버 | Nginx |
+| SSH 포트 | 22 |
+| HTTP 포트 | 80 |
+
+보안 그룹은 다음과 같이 설정했다.
+
+- SSH 22번 포트: 현재 관리자 IP만 허용
+- HTTP 80번 포트: 외부 웹 접속을 위해 허용
+- 불필요한 포트는 개방하지 않음
+
+인스턴스 ID, 공인 IP, AWS 계정 ID와 같은 식별 정보는 저장소에 기록하지 않았다.---
+
+## 4. Nginx 설치 및 웹 페이지 배포
+
+EC2 Ubuntu 서버에 접속한 뒤 Nginx를 설치했다.
+
+```bash
+sudo apt update
+sudo apt install -y nginx
+sudo systemctl enable --now nginx
+sudo systemctl status nginx
+```
+
+웹 페이지는 다음 경로에 배포했다.
+
+```text
+/var/www/html/index.html
+```
+
+배포한 페이지:
+
+```html
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>Home IDC EC2</title>
+</head>
+<body>
+  <h1>Home IDC Lab - Day 14</h1>
+  <p>AWS EC2 Ubuntu + Nginx 서버가 정상 동작 중입니다.</p>
+</body>
+</html>
+```
+
+EC2 내부와 외부 브라우저에서 각각 접속을 검증했다.
+
+```bash
+curl http://localhost
+```
+
+---
+
+## 5. CloudWatch CPU 경보 구성
+
+EC2의 기본 CloudWatch 지표인 `CPUUtilization`을 사용했다.
+
+| 항목 | 설정 |
+|---|---|
+| 지표 | CPUUtilization |
+| 통계 | Average |
+| 기간 | 5분 |
+| 평가 기간 | 1회 |
+| 비교 조건 | 1% 이상 |
+| 알림 대상 | Amazon SNS 이메일 구독 |
+
+1%라는 낮은 임계값은 실습 환경에서 짧은 시간 안에 경보 동작을 확인하기 위한 테스트 값이다. 실제 운영 환경에서는 서비스 특성과 정상 CPU 사용률을 분석해 적절한 임계값과 연속 평가 횟수를 설정해야 한다.
+
+---
+
+## 6. SNS 이메일 알림 구성
+
+CloudWatch 경보 알림을 전달하기 위해 다음 SNS 주제를 생성했다.
+
+```text
+home-idc-ec2-alerts
+```
+
+이메일 프로토콜로 구독을 생성한 뒤, 수신된 확인 메일의 `Confirm subscription` 링크를 눌러 구독을 활성화했다.
+
+이메일 주소, 구독 ARN, 구독 해지 링크 등의 개인정보와 AWS 식별 정보는 GitHub에 기록하지 않았다.---
+
+## 7. CPU 부하 테스트
+
+CloudWatch 경보 동작을 확인하기 위해 EC2에서 제한된 시간 동안 CPU 부하를 발생시켰다.
+
+```bash
+nohup timeout 420s bash -c 'while :; do :; done' >/dev/null 2>&1 &
+```
+
+CPU 사용률이 임계값을 넘은 뒤 CloudWatch 경보 상태가 다음과 같이 변경됐다.
+
+```text
+OK → ALARM
+```
+
+SNS를 통해 이메일 경보가 정상적으로 전달된 것을 확인했다.
+
+테스트 후 CPU 부하 프로세스를 종료해 불필요한 CPU 크레딧과 비용 사용을 방지했다.
+
+---
+
+## 8. 검증 결과
+
+다음 전체 흐름이 정상 동작했다.
+
+```text
+EC2 CPU 부하 발생
+    ↓
+CloudWatch CPUUtilization 수집
+    ↓
+임계값 초과 감지
+    ↓
+CloudWatch ALARM 상태 전환
+    ↓
+SNS 이메일 알림 전송
+```
+
+이를 통해 AWS의 서버 모니터링과 장애 알림 구조를 직접 구성하고 검증했다.
+
+---
+
+## 9. 비용 및 보안 리소스 정리
+
+실습 완료 후 지속적인 과금을 방지하기 위해 다음 리소스를 정리했다.
+
+- EC2 인스턴스 종료 및 삭제
+- EBS 볼륨 삭제 확인
+- CloudWatch 경보 삭제
+- SNS 주제와 이메일 구독 삭제
+- EC2 키 페어 삭제
+- 로컬 `.pem` 개인 키 파일 삭제
+- 실습용 보안 그룹 삭제
+- 탄력적 IP가 없음을 확인
+- NAT 게이트웨이가 없음을 확인
+- 기본 VPC와 기본 보안 그룹은 유지
+
+EC2를 단순히 중지하면 연결된 스토리지 비용이 계속 발생할 수 있으므로, 인스턴스 종료 후 관련 리소스까지 점검했다.
+
+---
+
+## 10. 보안 원칙
+
+이번 실습에서 다음 보안 원칙을 적용했다.
+
+- SSH 접속은 비밀번호 대신 키 기반 인증 사용
+- SSH 포트는 관리자 IP로 제한
+- 개인 키 파일 권한 제한
+- 실습 완료 후 AWS 키 페어와 로컬 개인 키 삭제
+- AWS 계정 ID, 인스턴스 ID, 공인 IP, 이메일 주소 비공개
+- 비밀 키와 인증 정보는 GitHub에 업로드하지 않음
+- 사용하지 않는 AWS 리소스를 즉시 삭제
+
+---
+
+## 11. 최종 결과
+
+AWS EC2 기반 Nginx 웹 서버 구축부터 CloudWatch 모니터링, SNS 이메일 알림, 장애 상황 테스트와 리소스 정리까지 전체 운영 흐름을 완료했다.
+
+이번 실습을 통해 다음 역량을 확인했다.
+
+- Linux 서버 구축 및 운영
+- Nginx 웹 서버 배포
+- AWS EC2 네트워크 및 보안 그룹 설정
+- CloudWatch 기반 서버 모니터링
+- SNS 기반 장애 알림 구성
+- 장애 상황 재현 및 알림 검증
+- 클라우드 비용과 보안 리소스 관리
