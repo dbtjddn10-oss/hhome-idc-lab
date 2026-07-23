@@ -1,3 +1,564 @@
+---
+
+# Day 12 - AWS IAM, S3 및 AWS CLI 백업 실습
+
+## 1. 실습 목표
+
+이번 실습에서는 로컬 Ubuntu 서버의 Nginx 백업 파일을 AWS S3에 안전하게 저장하고 복구하는 환경을 구성했다.
+
+주요 목표는 다음과 같다.
+
+- AWS 루트 사용자 사용 최소화
+- IAM 관리자 사용자 생성 및 MFA 적용
+- S3 백업 버킷 생성
+- 버킷 버전 관리 및 기본 암호화 적용
+- S3 전용 IAM 사용자 생성
+- 최소 권한 IAM 정책 적용
+- AWS CLI v2 설치 및 프로필 구성
+- AWS CLI를 이용한 파일 업로드 및 다운로드
+- SHA-256 해시를 이용한 파일 무결성 검증
+- 허용되지 않은 삭제 작업 차단 확인
+
+---
+
+## 2. 구성 환경
+
+| 구분 | 설정 |
+|---|---|
+| AWS 리전 | Asia Pacific (Seoul) |
+| 리전 코드 | `ap-northeast-2` |
+| S3 버킷 | `home-idc-backup-lab-20260723-k7m4` |
+| 관리자 IAM 사용자 | `home-idc-admin` |
+| S3 전용 IAM 사용자 | `home-idc-s3-backup` |
+| AWS CLI 프로필 | `home-idc-s3-backup` |
+| 운영체제 | Ubuntu Server 26.04 LTS |
+| AWS CLI | AWS CLI v2 |
+
+---
+
+## 3. AWS 계정 보안 강화
+
+AWS 루트 사용자 대신 일상적인 관리 작업에 사용할 IAM 관리자를 생성했다.
+
+### 적용한 보안 설정
+
+- 루트 사용자의 액세스 키 미사용
+- 루트 사용자 MFA 확인
+- IAM 관리자 사용자 생성
+- IAM 관리자 그룹에 `AdministratorAccess` 정책 연결
+- IAM 관리자 사용자에 패스키 MFA 등록
+- IAM 관리자 로그인 성공 확인 후 루트 사용자 로그아웃
+- AWS 비용 보호를 위한 Zero-Spend Budget 확인
+
+관리 작업은 `home-idc-admin` 사용자로 수행하고, 루트 사용자는 루트 전용 작업이 필요한 경우에만 사용하도록 구성했다.
+
+---
+
+## 4. S3 백업 버킷 생성
+
+서울 리전에 백업 전용 S3 버킷을 생성했다.
+
+```text
+home-idc-backup-lab-20260723-k7m4
+```
+
+### 버킷 보안 설정
+
+- 객체 소유권: ACL 비활성화
+- 모든 퍼블릭 액세스 차단
+- 버킷 버전 관리 활성화
+- 기본 암호화 활성화
+- 암호화 방식: SSE-S3
+- 리전: `ap-northeast-2`
+
+백업 데이터가 인터넷에 공개되지 않도록 모든 퍼블릭 액세스를 차단했다.
+
+---
+
+## 5. S3 수동 업로드 테스트
+
+Ubuntu 서버에 생성되어 있던 Nginx 백업 파일을 Windows로 복사했다.
+
+### 최근 백업 파일 확인
+
+```bash
+ssh -p 2222 sungwoo@127.0.0.1 "ls -1t /home/sungwoo/home-idc-lab/backups/nginx-html-*.tar.gz | head -n 1"
+```
+
+확인된 백업 파일:
+
+```text
+/home/sungwoo/home-idc-lab/backups/nginx-html-20260720-155519.tar.gz
+```
+
+### Ubuntu에서 Windows로 복사
+
+```powershell
+scp -P 2222 sungwoo@127.0.0.1:/home/sungwoo/home-idc-lab/backups/nginx-html-20260720-155519.tar.gz .
+```
+
+복사한 파일을 AWS Management Console에서 S3 버킷으로 직접 업로드하여 정상 저장되는 것을 확인했다.
+
+---
+
+## 6. S3 전용 IAM 사용자 생성
+
+AWS CLI에서 사용할 별도의 IAM 사용자를 생성했다.
+
+```text
+home-idc-s3-backup
+```
+
+이 사용자에는 AWS Management Console 로그인 권한을 부여하지 않았으며, S3 백업 작업에 필요한 권한만 부여했다.
+
+관리자 사용자의 액세스 키를 서버에 저장하지 않고, 별도의 최소 권한 사용자를 사용하도록 구성했다.
+
+---
+
+## 7. 최소 권한 IAM 정책
+
+S3 전용 사용자에게 아래 작업만 허용했다.
+
+- 버킷 내부 객체 목록 조회
+- 버킷 리전 조회
+- 객체 업로드
+- 객체 다운로드
+
+객체 삭제 권한은 부여하지 않았다.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BucketAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "arn:aws:s3:::home-idc-backup-lab-20260723-k7m4"
+    },
+    {
+      "Sid": "ObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::home-idc-backup-lab-20260723-k7m4/*"
+    }
+  ]
+}
+```
+
+정책 이름:
+
+```text
+HomeIDCS3BackupPolicy
+```
+
+---
+
+## 8. Ubuntu 시간 동기화 문제 해결
+
+AWS CLI 설치 전 `apt update` 실행 시 다음 오류가 발생했다.
+
+```text
+Release file is not valid yet
+```
+
+Ubuntu VM의 시스템 날짜가 실제 날짜보다 약 3일 느린 것이 원인이었다.
+
+### 시간 상태 확인
+
+```bash
+timedatectl status
+```
+
+### chrony를 이용한 즉시 시간 보정
+
+```bash
+sudo chronyc makestep
+```
+
+보정 후 시스템 시간이 정상적인 날짜로 변경됐으며, 패키지 업데이트를 다시 진행할 수 있었다.
+
+---
+
+## 9. AWS CLI v2 설치
+
+필수 패키지를 설치했다.
+
+```bash
+sudo apt update
+sudo apt install -y curl unzip
+```
+
+AWS CLI v2 설치 파일을 다운로드했다.
+
+```bash
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+```
+
+압축을 해제했다.
+
+```bash
+unzip awscliv2.zip
+```
+
+AWS CLI를 설치했다.
+
+```bash
+sudo ./aws/install
+```
+
+설치된 버전을 확인했다.
+
+```bash
+aws --version
+```
+
+확인된 버전:
+
+```text
+aws-cli/2.36.6
+```
+
+설치가 끝난 뒤 임시 설치 파일을 삭제했다.
+
+```bash
+rm -rf ~/aws ~/awscliv2.zip
+```
+
+---
+
+## 10. AWS CLI 프로필 구성
+
+S3 백업 전용 프로필을 생성했다.
+
+```bash
+aws configure --profile home-idc-s3-backup
+```
+
+설정값:
+
+```text
+Default region name: ap-northeast-2
+Default output format: json
+```
+
+액세스 키와 비밀 액세스 키는 GitHub 또는 문서에 기록하지 않았다.
+
+---
+
+## 11. IAM 사용자 인증 확인
+
+현재 AWS CLI가 어떤 IAM 사용자로 인증되는지 확인했다.
+
+```bash
+aws sts get-caller-identity --profile home-idc-s3-backup
+```
+
+확인 결과 AWS CLI가 아래 사용자로 정상 인증됐다.
+
+```text
+user/home-idc-s3-backup
+```
+
+---
+
+## 12. S3 객체 목록 조회
+
+S3 버킷에 저장된 객체를 AWS CLI에서 조회했다.
+
+```bash
+aws s3 ls s3://home-idc-backup-lab-20260723-k7m4 \
+  --profile home-idc-s3-backup
+```
+
+출력 결과:
+
+```text
+nginx-html-20260720-155519.tar.gz
+```
+
+이를 통해 `s3:ListBucket` 권한이 정상적으로 작동하는 것을 확인했다.
+
+---
+
+## 13. AWS CLI를 이용한 백업 업로드
+
+Ubuntu 서버의 백업 파일을 `cli-upload/` 경로로 업로드했다.
+
+```bash
+aws s3 cp \
+  /home/sungwoo/home-idc-lab/backups/nginx-html-20260720-155519.tar.gz \
+  s3://home-idc-backup-lab-20260723-k7m4/cli-upload/nginx-html-20260720-155519.tar.gz \
+  --profile home-idc-s3-backup
+```
+
+업로드 결과:
+
+```text
+upload: home-idc-lab/backups/nginx-html-20260720-155519.tar.gz
+to s3://home-idc-backup-lab-20260723-k7m4/cli-upload/nginx-html-20260720-155519.tar.gz
+```
+
+업로드된 객체를 다시 조회했다.
+
+```bash
+aws s3 ls \
+  s3://home-idc-backup-lab-20260723-k7m4/cli-upload/ \
+  --profile home-idc-s3-backup
+```
+
+정상적으로 파일이 조회되는 것을 확인했다.
+
+---
+
+## 14. S3 다운로드 및 복구 테스트
+
+복구 테스트 디렉터리를 생성하고 S3에 저장된 파일을 다시 다운로드했다.
+
+```bash
+mkdir -p /home/sungwoo/home-idc-lab/restore-test
+```
+
+```bash
+aws s3 cp \
+  s3://home-idc-backup-lab-20260723-k7m4/cli-upload/nginx-html-20260720-155519.tar.gz \
+  /home/sungwoo/home-idc-lab/restore-test/nginx-html-20260720-155519.tar.gz \
+  --profile home-idc-s3-backup
+```
+
+다운로드가 정상적으로 완료되는 것을 확인했다.
+
+---
+
+## 15. SHA-256 파일 무결성 검증
+
+원본 백업 파일과 S3에서 다운로드한 파일의 SHA-256 해시를 비교했다.
+
+```bash
+sha256sum \
+  /home/sungwoo/home-idc-lab/backups/nginx-html-20260720-155519.tar.gz \
+  /home/sungwoo/home-idc-lab/restore-test/nginx-html-20260720-155519.tar.gz
+```
+
+검증 결과:
+
+```text
+1e199f73a23e0418ca72f3ba6cc78141b745db25a8807d724f903ce12607c786
+1e199f73a23e0418ca72f3ba6cc78141b745db25a8807d724f903ce12607c786
+```
+
+두 해시값이 일치하므로 업로드 및 다운로드 과정에서 파일이 변조되거나 손상되지 않았음을 확인했다.
+
+---
+
+## 16. AWS 자격 증명 파일 권한 강화
+
+AWS CLI 자격 증명 파일의 권한을 확인했다.
+
+```bash
+ls -ld ~/.aws
+ls -l ~/.aws
+```
+
+`config`와 `credentials` 파일은 소유자만 읽고 쓸 수 있는 `600` 권한으로 설정되어 있었다.
+
+`.aws` 디렉터리 접근 권한도 소유자만 접근할 수 있도록 변경했다.
+
+```bash
+chmod 700 ~/.aws ~/.aws/cli
+```
+
+확인 결과:
+
+```text
+drwx------ /home/sungwoo/.aws
+drwx------ /home/sungwoo/.aws/cli
+```
+
+---
+
+## 17. 최소 권한 삭제 차단 테스트
+
+S3 전용 IAM 사용자에게 삭제 권한이 없는지 확인했다.
+
+```bash
+aws s3 rm \
+  s3://home-idc-backup-lab-20260723-k7m4/cli-upload/nginx-html-20260720-155519.tar.gz \
+  --profile home-idc-s3-backup
+```
+
+실행 결과:
+
+```text
+AccessDenied
+```
+
+`home-idc-s3-backup` 사용자에게 `s3:DeleteObject` 권한이 없기 때문에 삭제가 차단됐다.
+
+이를 통해 최소 권한 정책이 의도한 대로 작동하는 것을 확인했다.
+
+---
+
+## 18. 복구 테스트 파일 정리
+
+검증이 끝난 임시 복구 디렉터리를 삭제했다.
+
+```bash
+rm -rf /home/sungwoo/home-idc-lab/restore-test
+```
+
+S3에 업로드된 백업 객체는 그대로 유지했다.
+
+---
+
+## 19. 보안상 GitHub에 업로드하지 않은 파일
+
+다음 파일과 정보는 보안상 GitHub에 업로드하지 않았다.
+
+```text
+AWS 액세스 키 CSV 파일
+~/.aws/credentials
+AWS Secret Access Key
+AWS Access Key ID
+AWS 계정 번호
+IAM 로그인 URL
+임시 비밀번호
+MFA 정보
+```
+
+AWS CLI 설정이 끝난 뒤 Windows에 다운로드했던 액세스 키 CSV 파일도 삭제했다.
+
+---
+
+## 20. 트러블슈팅
+
+### 문제 1: `Release file is not valid yet`
+
+원인:
+
+```text
+Ubuntu VM의 시스템 시간이 실제 시간보다 느림
+```
+
+해결:
+
+```bash
+sudo chronyc makestep
+```
+
+---
+
+### 문제 2: dpkg lock 사용 중
+
+발생 메시지:
+
+```text
+Could not get lock /var/lib/dpkg/lock-frontend
+It is held by process unattended-upgr
+```
+
+원인:
+
+```text
+Ubuntu 자동 업데이트가 패키지 관리자를 사용 중
+```
+
+해결:
+
+```text
+자동 업데이트가 끝날 때까지 기다린 후 설치를 계속 진행
+```
+
+잠금 파일을 강제로 삭제하지 않았다.
+
+---
+
+### 문제 3: `SignatureDoesNotMatch`
+
+원인:
+
+```text
+Access Key ID와 Secret Access Key 입력 위치가 잘못됨
+```
+
+해결:
+
+```bash
+aws configure --profile home-idc-s3-backup
+```
+
+프로필을 다시 설정한 뒤 정상적으로 인증됐다.
+
+---
+
+### 문제 4: PowerShell SSH 창에서 붙여넣기 불가
+
+해결:
+
+```text
+Ctrl+V 대신 터미널 내부에서 마우스 오른쪽 버튼을 클릭하여 붙여넣기
+```
+
+---
+
+## 21. 최종 검증 결과
+
+| 테스트 | 결과 |
+|---|---|
+| IAM 관리자 사용자 로그인 | 성공 |
+| 관리자 사용자 MFA 등록 | 성공 |
+| S3 버킷 생성 | 성공 |
+| 퍼블릭 액세스 차단 | 적용 |
+| 버킷 버전 관리 | 활성화 |
+| 기본 암호화 | 적용 |
+| S3 수동 업로드 | 성공 |
+| AWS CLI v2 설치 | 성공 |
+| 전용 IAM 사용자 인증 | 성공 |
+| S3 객체 목록 조회 | 성공 |
+| AWS CLI 업로드 | 성공 |
+| AWS CLI 다운로드 | 성공 |
+| SHA-256 무결성 검증 | 일치 |
+| 삭제 권한 차단 | `AccessDenied` |
+| AWS 자격 증명 파일 권한 | `600` |
+| AWS 디렉터리 권한 | `700` |
+
+---
+
+## 22. 이번 실습에서 익힌 내용
+
+- AWS 루트 사용자와 IAM 사용자의 역할 차이
+- IAM 사용자, 그룹 및 정책 구성
+- 패스키 기반 MFA 설정
+- 최소 권한 원칙
+- S3 버킷 생성 및 보안 설정
+- S3 버전 관리와 서버 측 암호화
+- AWS CLI v2 설치 및 프로필 관리
+- AWS CLI를 이용한 객체 업로드와 다운로드
+- SHA-256을 이용한 백업 무결성 검증
+- Linux 파일 및 디렉터리 권한 관리
+- 의도적인 `AccessDenied` 테스트를 통한 권한 검증
+- 시스템 시간 오류와 패키지 잠금 문제 해결
+
+---
+
+## 23. Day 12 완료 결과
+
+로컬 Ubuntu 서버에서 생성된 Nginx 백업 파일을 AWS S3에 안전하게 보관하고 다시 복구할 수 있는 환경을 구축했다.
+
+관리자 자격 증명을 서버에 저장하지 않고, S3 백업에 필요한 권한만 가진 별도의 IAM 사용자를 사용했다.
+
+또한 업로드, 조회, 다운로드는 허용하면서 삭제는 차단하여 최소 권한 원칙이 실제로 적용되는 것을 검증했다.
+
+다음 단계에서는 현재의 수동 AWS CLI 업로드 작업을 백업 스크립트 및 Cron과 연결하여 S3 자동 업로드 환경을 구성할 예정이다.
+
+
+
 # Day 11 - Nginx 웹 콘텐츠 백업 및 복원 자동화
 
 ## 1. 실습 목표
